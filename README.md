@@ -6,7 +6,7 @@ A modular Audio ML platform for converting authorized songs into a voice model t
 
 ## Current verified state
 
-The dependency-light pipeline is implemented and tested with generated audio. Demucs, TorchCREPE, Seed-VC, MLflow, GPU backends, and real singer quality require their optional dependencies, reviewed weights, authorized audio, and hardware-specific validation. No quality or performance result is claimed before measurement; see [PROJECT_REPORT.md](PROJECT_REPORT.md).
+The dependency-light pipeline is implemented and tested with generated audio. Demucs, TorchCREPE, Seed-VC, MLflow, GPU backends, and real singer quality require their optional dependencies, reviewed weights, authorized audio, and hardware-specific validation. No quality or performance result is claimed before measurement.
 
 ## Architecture
 
@@ -31,7 +31,7 @@ Long-running work is persisted as a SQLite job and executed by a separate worker
 
 ## Technology choices
 
-- Python 3.10â€“3.12 core; Python 3.10 is recommended for Seed-VC compatibility.
+- Python 3.10–3.12 core; Python 3.10 is recommended for Seed-VC compatibility.
 - NumPy/Pydantic core, SoundFile/SciPy audio extras, PyTorch backend-specific ML extras.
 - Demucs `htdemucs` adapter for vocals/instrumental stems.
 - Seed-VC v1 adapter requiring explicit repository, checkpoint, and config paths.
@@ -96,7 +96,7 @@ ruff check src tests
 mypy src/nsvp
 ```
 
-Model/GPU tests are marked separately. Real hardware validation results belong in `docs/BACKEND_MATRIX.md` and must state â€œNot testedâ€ until executed.
+Model/GPU tests are marked separately. Real hardware results must not be claimed until they have been measured on the stated configuration.
 
 ## Repository map
 
@@ -106,11 +106,8 @@ Model/GPU tests are marked separately. Real hardware validation results belong i
 - `src/nsvp/pipeline.py`: conversion orchestration.
 - `src/nsvp/jobs.py`, `api.py`: durable local jobs and service API.
 - `apps/web`: local React UI.
-- `TECHNICAL_WALKTHROUGH.md`: code-level teaching guide.
-- `docs`: architecture, modeling, audio, decisions, interviews, and future work.
+- `docs`: public architecture, modeling, audio pipeline, and engineering decisions.
 
 ## Limitations
 
 Source separation bleed, reverb, backing vocals, limited training range, extreme techniques, high notes, language coverage, and speech-trained similarity embeddings can all reduce quality. V1 treats all vocals as one stem. Real-time conversion, cloud object storage, distributed workers, and multi-user production security are future designs, not implemented claims.
-
-

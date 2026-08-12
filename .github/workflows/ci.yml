@@ -1,0 +1,18 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.10" }
+      - run: pip install -e ".[audio,api,dev]"
+      - run: ruff check src tests
+      - run: mypy src/nsvp
+      - run: pytest -m "not model and not gpu" --cov=nsvp
+      - uses: actions/setup-node@v5
+        with: { node-version: "24" }
+      - run: corepack enable
+      - run: pnpm --dir apps/web install --frozen-lockfile
+      - run: pnpm --dir apps/web build

@@ -1,0 +1,19 @@
+device:
+  backend: auto
+  allow_cpu_fallback: true
+  precision: auto
+audio:
+  training_sample_rate: 44100
+  minimum_segment_seconds: 2.0
+  target_maximum_segment_seconds: 15.0
+  absolute_maximum_segment_seconds: 30.0
+  minimum_silence_seconds: 0.25
+  silence_threshold_db: -45.0
+  clipping_threshold: 0.999
+artifact_root: artifacts
+database_path: artifacts/nsvp.sqlite3
+model_cache: artifacts/model-cache
+seed_vc_root: null
+seed_vc_checkpoint: null
+seed_vc_config: null
+

@@ -1,0 +1,24 @@
+services:
+  api:
+    build: .
+    command: uvicorn nsvp.api:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    volumes: ["./artifacts:/app/artifacts", "./configs:/app/configs:ro"]
+  worker:
+    build: .
+    command: nsvp worker
+    volumes: ["./artifacts:/app/artifacts", "./configs:/app/configs:ro"]
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["full"]
+    environment: { POSTGRES_USER: nsvp, POSTGRES_PASSWORD: nsvp, POSTGRES_DB: nsvp }
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+  mlflow:
+    build: .
+    profiles: ["full"]
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql://nsvp:nsvp@postgres/nsvp --default-artifact-root /app/artifacts/mlflow
+    ports: ["5000:5000"]
+    volumes: ["./artifacts:/app/artifacts"]
+    depends_on: [postgres]
+volumes: { postgres_data: {} }
+
