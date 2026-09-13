@@ -27,6 +27,8 @@ apps/web/node_modules-v01-incomplete/
 apps/web/dist/
 *.tsbuildinfo
 .cache/
+/docs/
+/CHANGELOG.md
 
 # Private authoring, report, CV, and portfolio outputs
 MASTER PROMPT_ Neural Singing Voice Platform.md

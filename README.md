@@ -8,7 +8,7 @@ A modular Audio ML platform for converting authorized songs into a voice model t
 
 The dependency-light pipeline, provider selection, vocal preparation, evaluation families, dataset audits, benchmark jobs and UI build are tested with generated audio. Seed-VC and Demucs remain defaults. SoulX-Singer-SVC is an optional experimental adapter with its own Python environment and explicitly provisioned offline assets. Real model inference and model/backend compatibility remain `not_tested` / `not_verified` in this checkout.
 
-See [v0.2 migration and operation](docs/V02_GUIDE.md), [provider capabilities](docs/reports/provider-capabilities.json), and the generated [synthetic comparison report](docs/reports/synthetic-benchmark.html). The synthetic report tests orchestration and metrics, not singer quality. Browser checks covered desktop/mobile layout, upload, preparation, explicit source selection, playback and benchmark result rendering.
+Synthetic checks test orchestration and metrics, not singer quality. Browser checks covered desktop/mobile layout, upload, preparation, explicit source selection, playback and benchmark result rendering.
 
 ## Architecture
 
@@ -70,7 +70,7 @@ Generated WAV fixtures exercise validation, segmentation, F0 metrics, artifacts,
 
 2. Download the reviewed 44.1 kHz F0-conditioned SVC checkpoint separately.
 3. Set `providers.seed_vc.repository_root`, `checkpoint_path`, `config_path`, and a reviewed full `revision` in `configs/default.yaml`. Set its `python_executable` to the separately installed upstream environment.
-4. Provision all auxiliary weights locally. Set `providers.demucs.python_executable` and `model_repository` to a local Demucs environment and model repository. See [asset requirements](docs/V02_GUIDE.md).
+4. Provision all auxiliary weights locally. Set `providers.demucs.python_executable` and `model_repository` to a local Demucs environment and model repository.
 5. Run:
 
    ```powershell
