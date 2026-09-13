@@ -1,0 +1,306 @@
+{
+  "real_inference_validation": "not_tested",
+  "scope": "Configured default providers, no model weights loaded",
+  "components": [
+    {
+      "name": "seed_vc",
+      "version": "unknown",
+      "task": "svc",
+      "stability": "stable",
+      "sample_rates": [
+        44100
+      ],
+      "zero_shot": true,
+      "supports_training": true,
+      "f0_conditioning": true,
+      "midi_conditioning": false,
+      "reference_audio_conditioning": true,
+      "backends": {
+        "cuda": "not_verified",
+        "rocm": "not_verified",
+        "directml": "unsupported",
+        "mps": "not_verified",
+        "cpu": "not_verified"
+      },
+      "precisions": [
+        "fp32",
+        "fp16"
+      ],
+      "maximum_tested_input_seconds": null,
+      "external_environment": true,
+      "installed": false,
+      "configured": false,
+      "checkpoint_sha256": null,
+      "license_name": null,
+      "license_url": null,
+      "warnings": [
+        "External Python dependencies have not been probed."
+      ]
+    },
+    {
+      "name": "soulx_singer",
+      "version": "unknown",
+      "task": "svc",
+      "stability": "experimental",
+      "sample_rates": [
+        24000
+      ],
+      "zero_shot": true,
+      "supports_training": false,
+      "f0_conditioning": true,
+      "midi_conditioning": false,
+      "reference_audio_conditioning": true,
+      "backends": {
+        "cuda": "not_verified",
+        "rocm": "not_verified",
+        "directml": "unsupported",
+        "mps": "unsupported",
+        "cpu": "not_verified"
+      },
+      "precisions": [
+        "fp32",
+        "fp16"
+      ],
+      "maximum_tested_input_seconds": null,
+      "external_environment": true,
+      "installed": false,
+      "configured": false,
+      "checkpoint_sha256": null,
+      "license_name": null,
+      "license_url": null,
+      "warnings": [
+        "External Python dependencies have not been probed."
+      ]
+    },
+    {
+      "name": "demucs",
+      "version": "unknown",
+      "task": "separation",
+      "stability": "stable",
+      "sample_rates": [
+        44100
+      ],
+      "zero_shot": false,
+      "supports_training": false,
+      "f0_conditioning": false,
+      "midi_conditioning": false,
+      "reference_audio_conditioning": false,
+      "backends": {
+        "cuda": "not_verified",
+        "rocm": "not_verified",
+        "directml": "unsupported",
+        "mps": "not_verified",
+        "cpu": "not_verified"
+      },
+      "precisions": [
+        "fp32"
+      ],
+      "maximum_tested_input_seconds": null,
+      "external_environment": true,
+      "installed": false,
+      "configured": false,
+      "checkpoint_sha256": null,
+      "license_name": null,
+      "license_url": null,
+      "warnings": [
+        "External Python dependencies have not been probed."
+      ]
+    },
+    {
+      "name": "none",
+      "version": "0.2",
+      "task": "preprocessing",
+      "stability": "stable",
+      "sample_rates": [],
+      "zero_shot": false,
+      "supports_training": false,
+      "f0_conditioning": false,
+      "midi_conditioning": false,
+      "reference_audio_conditioning": false,
+      "backends": {
+        "cpu": "verified"
+      },
+      "precisions": [
+        "fp32"
+      ],
+      "maximum_tested_input_seconds": null,
+      "external_environment": false,
+      "installed": true,
+      "configured": true,
+      "checkpoint_sha256": null,
+      "license_name": null,
+      "license_url": null,
+      "warnings": []
+    },
+    {
+      "name": "autocorrelation",
+      "version": "0.2",
+      "task": "pitch",
+      "stability": "stable",
+      "sample_rates": [],
+      "zero_shot": false,
+      "supports_training": false,
+      "f0_conditioning": false,
+      "midi_conditioning": false,
+      "reference_audio_conditioning": false,
+      "backends": {
+        "cpu": "verified"
+      },
+      "precisions": [
+        "fp32"
+      ],
+      "maximum_tested_input_seconds": null,
+      "external_environment": false,
+      "installed": true,
+      "configured": true,
+      "checkpoint_sha256": null,
+      "license_name": null,
+      "license_url": null,
+      "warnings": [
+        "Diagnostic F0 estimator; not a production singing F0 quality claim."
+      ]
+    },
+    {
+      "name": "pyworld",
+      "version": "unknown",
+      "task": "pitch",
+      "stability": "experimental",
+      "sample_rates": [],
+      "zero_shot": false,
+      "supports_training": false,
+      "f0_conditioning": false,
+      "midi_conditioning": false,
+      "reference_audio_conditioning": false,
+      "backends": {
+        "cuda": "unsupported",
+        "rocm": "unsupported",
+        "directml": "unsupported",
+        "mps": "unsupported",
+        "cpu": "not_verified"
+      },
+      "precisions": [
+        "fp32"
+      ],
+      "maximum_tested_input_seconds": null,
+      "external_environment": false,
+      "installed": false,
+      "configured": true,
+      "checkpoint_sha256": null,
+      "license_name": null,
+      "license_url": null,
+      "warnings": []
+    },
+    {
+      "name": "torchcrepe",
+      "version": "unknown",
+      "task": "pitch",
+      "stability": "experimental",
+      "sample_rates": [
+        16000
+      ],
+      "zero_shot": false,
+      "supports_training": false,
+      "f0_conditioning": false,
+      "midi_conditioning": false,
+      "reference_audio_conditioning": false,
+      "backends": {
+        "cuda": "unsupported",
+        "rocm": "unsupported",
+        "directml": "unsupported",
+        "mps": "unsupported",
+        "cpu": "not_verified"
+      },
+      "precisions": [
+        "fp32"
+      ],
+      "maximum_tested_input_seconds": null,
+      "external_environment": false,
+      "installed": false,
+      "configured": true,
+      "checkpoint_sha256": null,
+      "license_name": null,
+      "license_url": null,
+      "warnings": [
+        "The current analysis wrapper executes on CPU; model quality is not verified."
+      ]
+    },
+    {
+      "name": "unmixx",
+      "version": "unknown",
+      "task": "multi_singer_separation",
+      "stability": "research_reference",
+      "sample_rates": [],
+      "zero_shot": false,
+      "supports_training": false,
+      "f0_conditioning": false,
+      "midi_conditioning": false,
+      "reference_audio_conditioning": false,
+      "backends": {},
+      "precisions": [
+        "fp32"
+      ],
+      "maximum_tested_input_seconds": null,
+      "external_environment": false,
+      "installed": false,
+      "configured": false,
+      "checkpoint_sha256": null,
+      "license_name": null,
+      "license_url": null,
+      "warnings": [
+        "Runtime integration deferred beyond v0.2."
+      ]
+    },
+    {
+      "name": "yingmusic_svc",
+      "version": "unknown",
+      "task": "svc",
+      "stability": "research_reference",
+      "sample_rates": [],
+      "zero_shot": false,
+      "supports_training": false,
+      "f0_conditioning": false,
+      "midi_conditioning": false,
+      "reference_audio_conditioning": false,
+      "backends": {},
+      "precisions": [
+        "fp32"
+      ],
+      "maximum_tested_input_seconds": null,
+      "external_environment": false,
+      "installed": false,
+      "configured": false,
+      "checkpoint_sha256": null,
+      "license_name": null,
+      "license_url": null,
+      "warnings": [
+        "Research reference only; no runtime adapter."
+      ]
+    },
+    {
+      "name": "yingmusic_singer_plus",
+      "version": "unknown",
+      "task": "svs",
+      "stability": "research_reference",
+      "sample_rates": [],
+      "zero_shot": false,
+      "supports_training": false,
+      "f0_conditioning": false,
+      "midi_conditioning": false,
+      "reference_audio_conditioning": false,
+      "backends": {},
+      "precisions": [
+        "fp32"
+      ],
+      "maximum_tested_input_seconds": null,
+      "external_environment": false,
+      "installed": false,
+      "configured": false,
+      "checkpoint_sha256": null,
+      "license_name": null,
+      "license_url": null,
+      "warnings": [
+        "Research reference only; SVS is outside v0.2."
+      ]
+    }
+  ]
+}

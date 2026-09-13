@@ -1,62 +1,175 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { artifactUrl, items, object, parseCatalog, parseJob, post, request, strings, terminal, text, upload, type Catalog, type Job } from "./api";
 import "./styles.css";
 
-type Job = { id: string; state: string; stage: string; progress: number; error?: { message: string }; result?: { artifacts?: Record<string, string> } };
-type Model = { model_name: string; version: string; architecture: string; evaluation_status: string };
+const errorText = (error: unknown) => error instanceof Error ? error.message : "Request failed";
+type Source = { id: string; artifact: string; label: string };
+type Model = { id: string; mode: string; status: string };
 
-const stages = ["Uploading", "Separating stems", "Analyzing vocal", "Extracting pitch", "Converting voice", "Post-processing", "Mixing", "Evaluating", "Complete"];
-
-function App() {
-  const [models, setModels] = useState<Model[]>([]);
-  const [song, setSong] = useState<File>();
-  const [reference, setReference] = useState<File>();
-  const [job, setJob] = useState<Job>();
-  const [message, setMessage] = useState("Ready for authorized audio");
-
-  useEffect(() => { fetch("/api/models").then(r => r.ok ? r.json() : []).then(setModels).catch(() => setMessage("API is offline")); }, []);
+function Artifacts({ value }: { value: unknown }) {
+  return <div className="artifacts">{Object.entries(strings(value)).map(([name, id]) => <div className="artifact" key={name}>
+    <a href={artifactUrl(id)} download>{name} <span>Download</span></a>
+    {/\.(wav|flac|mp3|ogg|m4a|opus)$/i.test(name) && <audio aria-label={name} controls preload="none" src={artifactUrl(id)}/>}
+  </div>)}</div>;
+}
+function Evaluation({ value }: { value: unknown }) {
+  const report = object(value);
+  return <div className="table-scroll"><table><caption>Evaluation: {text(report.input_condition)}</caption>
+    <thead><tr><th>Family / metric</th><th>Value</th><th>Status / limitation</th></tr></thead>
+    <tbody>{Object.entries(object(report.families)).flatMap(([family, metrics]) => Object.entries(object(metrics)).map(([name, value]) => {
+      const metric = object(value), status = text(metric.status);
+      const evaluator = metric.evaluator ? object(metric.evaluator) : undefined;
+      return <tr key={family + name}><th>{family} / {name}</th><td>{status === "measured" && typeof metric.value === "number" ? metric.value.toPrecision(5) : "Not measured"} {typeof metric.unit === "string" ? metric.unit : ""}</td>
+        <td>{status}{typeof metric.reason === "string" && <small>{metric.reason}</small>}{evaluator && <small>{text(evaluator.name)} {text(evaluator.version)}</small>}</td></tr>;
+    }))}</tbody></table></div>;
+}
+function Results({ job }: { job: Job }) {
+  const [report, setReport] = useState<unknown>(), [error, setError] = useState("");
+  const id = job.result.artifacts ? strings(job.result.artifacts)["evaluation_report.json"] : undefined;
   useEffect(() => {
-    if (!job || ["SUCCEEDED", "FAILED", "CANCELLED"].includes(job.state)) return;
-    const timer = window.setInterval(async () => setJob(await fetch(`/api/jobs/${job.id}`).then(r => r.json())), 1000);
-    return () => window.clearInterval(timer);
+    setReport(undefined); setError("");
+    if (!id) return;
+    const controller = new AbortController();
+    request("/artifacts/" + encodeURIComponent(id), { signal: controller.signal }).then(setReport).catch(error => {
+      if (!controller.signal.aborted) setError(errorText(error));
+    });
+    return () => controller.abort();
+  }, [id]);
+  return <section className="panel results"><h2>Results</h2>
+    {job.result.artifacts != null && <Artifacts value={job.result.artifacts}/>}
+    {error && <p role="alert">{error}</p>}{report != null && <Evaluation value={report}/>}
+    {job.result.evaluation != null && !id && <Evaluation value={job.result.evaluation}/>}
+    {job.result.results != null && items(job.result.results).map((value, index) => {
+      const row = object(value), conversion = row.conversion ? object(row.conversion) : undefined;
+      return <details key={index}><summary>{text(row.case_id)} / {text(row.configuration_id)}: {text(row.status)}</summary>
+        {items(row.warnings).map((warning, i) => <p key={i}>{text(warning)}</p>)}
+        {row.evaluation != null && <Evaluation value={row.evaluation}/>}
+        {conversion?.artifacts != null && <Artifacts value={conversion.artifacts}/>}
+      </details>;
+    })}
+  </section>;
+}
+function App() {
+  const [catalog, setCatalog] = useState<Catalog>({ providers: [], profiles: {}, vocalProfiles: [] });
+  const [models, setModels] = useState<Model[]>([]), [runs, setRuns] = useState<Job[]>([]);
+  const [song, setSong] = useState<File>(), [reference, setReference] = useState<File>(), [job, setJob] = useState<Job>();
+  const [message, setMessage] = useState("Loading providers"), [error, setError] = useState(""), [busy, setBusy] = useState(false);
+  const [converter, setConverter] = useState(""), [separator, setSeparator] = useState("");
+  const [converterProfile, setConverterProfile] = useState(""), [separatorProfile, setSeparatorProfile] = useState("");
+  const [vocalProfile, setVocalProfile] = useState(""), [modelProfile, setModelProfile] = useState("");
+  const [backend, setBackend] = useState("auto"), [precision, setPrecision] = useState("auto");
+  const [transpose, setTranspose] = useState(0), [seed, setSeed] = useState(42), [keep, setKeep] = useState(true);
+  const [inputKind, setInputKind] = useState("song"), [condition, setCondition] = useState("unknown");
+  const [prepared, setPrepared] = useState<{ manifest: string; sources: Source[] }>(), [selected, setSelected] = useState("");
+  const [compare, setCompare] = useState("soulx_singer");
+  const active = busy || !terminal(job);
+  const resetPreparation = () => { setPrepared(undefined); setSelected(""); };
+
+  useEffect(() => {
+    const controller = new AbortController(), init = { signal: controller.signal };
+    Promise.all([request("/providers", init), request("/models", init), request("/benchmark-runs", init)]).then(([providers, modelList, benchmarks]) => {
+      setCatalog(parseCatalog(providers));
+      setModels(items(modelList).map(value => { const model = object(value); return {
+        id: text(model.model_name) + "/" + text(model.version), mode: text(model.mode), status: text(model.evaluation_status),
+      }; }));
+      setRuns(items(benchmarks).map(parseJob)); setMessage("Ready for authorized audio");
+    }).catch(error => { if (!controller.signal.aborted) setError(errorText(error)); });
+    return () => controller.abort();
+  }, []);
+  useEffect(() => {
+    if (!job || terminal(job)) return;
+    const id = job.id, controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      request("/jobs/" + encodeURIComponent(id), { signal: controller.signal }).then(parseJob).then(next => {
+        setError("");
+        setJob(next);
+        if (!terminal(next)) return;
+        setMessage(next.kind + ": " + next.state);
+        if (next.kind === "benchmark") setRuns(previous => [next, ...previous.filter(run => run.id !== next.id)]);
+        if (next.kind === "vocal_preparation" && next.state === "SUCCEEDED") {
+          const manifest = strings(next.result.artifacts)["vocal_preparation.json"];
+          if (!manifest) throw new Error("Preparation manifest is missing");
+          setPrepared({ manifest, sources: items(next.result.sources).map(value => {
+            const source = object(value); return { id: text(source.source_id), artifact: text(source.artifact_id), label: typeof source.label === "string" ? source.label : text(source.source_id) };
+          }) }); setSelected("");
+        }
+      }).catch(error => { if (!controller.signal.aborted) { setError(errorText(error)); setJob(current => current ? { ...current } : current); } });
+    }, 1000);
+    return () => { window.clearTimeout(timer); controller.abort(); };
   }, [job]);
 
-  async function upload(file: File) {
-    const body = new FormData(); body.append("file", file);
-    const response = await fetch("/api/uploads", { method: "POST", body });
-    if (!response.ok) throw new Error((await response.json()).detail || "Upload failed");
-    return (await response.json()).artifact_id as string;
-  }
-
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!song || !reference) return;
+  async function queue(action: "conversion" | "preparation" | "benchmark") {
+    if (!song || (action !== "preparation" && !reference)) return;
+    setBusy(true); setError(""); setMessage("Uploading audio");
     try {
-      setMessage("Uploading authorized audio…");
-      const [songId, referenceId] = await Promise.all([upload(song), upload(reference)]);
-      const response = await fetch("/api/conversion-jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_artifact_id: songId, reference_artifact_id: referenceId, output_name: song.name.replace(/\.[^.]+$/, "") }) });
-      if (!response.ok) throw new Error((await response.json()).detail || "Could not queue job");
-      setJob(await response.json()); setMessage("Conversion queued");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Unexpected error"); }
+      const source = prepared && action === "conversion" ? undefined : await upload(song);
+      const target = action === "preparation" || !reference ? undefined : await upload(reference);
+      const selections = { voice_converter: modelProfile ? null : converter || null, converter_profile: modelProfile ? null : converterProfile || null,
+        model_profile: modelProfile || null, backend, precision, transpose_semitones: transpose };
+      const processing = { separator: separator || null, separator_profile: separatorProfile || null, vocal_processing_profile: vocalProfile || null };
+      let response: unknown;
+      if (action === "preparation") {
+        resetPreparation();
+        response = await post("/vocal-preparation-jobs", { source_artifact_id: source, input_kind: inputKind, input_condition: condition, backend, ...processing });
+      } else if (action === "benchmark") {
+        response = await post("/benchmark-runs", { name: "Comparison: " + song.name, seeds: [seed],
+          cases: [{ case_id: "uploaded-audio", source_artifact_id: source, reference_artifact_id: target, input_kind: inputKind, input_condition: condition }],
+          configurations: [{ configuration_id: "selected", ...selections, ...processing },
+            { configuration_id: "comparison", ...selections, ...processing, voice_converter: compare, converter_profile: null, model_profile: null }] });
+      } else {
+        response = await post("/conversion-jobs", { reference_artifact_id: target, output_name: song.name.replace(/\.[^.]+$/, ""),
+          ...selections, keep_intermediates: keep, random_seed: seed, input_kind: inputKind, input_condition: condition,
+          ...(prepared ? { preparation_manifest_artifact_id: prepared.manifest, selected_source_id: selected } : { song_artifact_id: source, ...processing }) });
+      }
+      setJob(parseJob(response)); setMessage(action + " queued");
+    } catch (error) { setError(errorText(error)); } finally { setBusy(false); }
   }
-
+  const providers = (task: string) => catalog.providers.filter(provider => provider.task === task && provider.stability !== "research_reference")
+    .map(provider => <option key={provider.name} value={provider.name}>{provider.name} ({provider.stability}{provider.configured ? "" : ", setup needed"})</option>);
+  const profiles = (provider: string, task: string) => Object.entries(catalog.profiles).filter(([, owner]) => provider ? owner === provider : catalog.providers.some(entry => entry.name === owner && entry.task === task))
+    .map(([name]) => <option key={name}>{name}</option>);
+  const select = (label: string, value: string, change: (value: string) => void, options: React.ReactNode, disabled = false) =>
+    <label>{label}<select value={value} onChange={event => change(event.target.value)} disabled={disabled}>{options}</select></label>;
+  const defaults = <option value="">Configured default</option>;
   return <main>
-    <header><div><span className="eyebrow">AUTHORIZED AUDIO ML WORKSPACE</span><h1>Neural Singing<br/><em>Voice Platform</em></h1></div><div className="status"><i></i>{message}</div></header>
-    <section className="grid">
-      <article className="panel convert"><div className="number">01</div><h2>Convert a song</h2><p>Preserve melody and timing while conditioning the output on your registered voice.</p>
-        <form onSubmit={submit}>
-          <label>AUTHORIZED SONG<input type="file" accept="audio/*" onChange={e => setSong(e.target.files?.[0])}/><span>{song?.name || "Choose song"}</span></label>
-          <label>YOUR VOICE REFERENCE<input type="file" accept="audio/*" onChange={e => setReference(e.target.files?.[0])}/><span>{reference?.name || "Choose dry vocal"}</span></label>
-          <button disabled={!song || !reference || (!!job && !["SUCCEEDED", "FAILED", "CANCELLED"].includes(job.state))}>QUEUE CONVERSION <b>→</b></button>
-        </form>
-      </article>
-      <article className="panel models"><div className="number">02</div><h2>Voice models</h2>{models.length ? models.map(model => <div className="model" key={`${model.model_name}-${model.version}`}><strong>{model.model_name}</strong><span>{model.version} · {model.architecture}</span><small>{model.evaluation_status}</small></div>) : <div className="empty">No verified model registered yet.<br/><code>nsvp models list</code></div>}</article>
-    </section>
-    <section className="panel pipeline"><div className="number">03</div><div><h2>Pipeline</h2><p>{job ? `${job.state} · ${job.stage}` : "A conversion job will expose every processing stage."}</p></div><div className="progress"><div style={{width: `${(job?.progress || 0) * 100}%`}}/></div><ol>{stages.map((stage, index) => <li className={job && index / stages.length <= job.progress ? "active" : ""} key={stage}><span>{String(index + 1).padStart(2, "0")}</span>{stage}</li>)}</ol>{job?.error && <div className="error">{job.error.message}</div>}</section>
-    {job?.result?.artifacts && <section className="panel results"><div className="number">04</div><h2>Results</h2><div className="artifacts">{Object.entries(job.result.artifacts).map(([name, id]) => <a href={`/api/artifacts/${id}`} key={id}>{name}<span>DOWNLOAD</span></a>)}</div></section>}
-    <footer>Use only voices and music you own or are authorized to process. Metrics are reported only when measured.</footer>
+    <header><div><span className="eyebrow">AUTHORIZED AUDIO ML WORKSPACE</span><h1>Neural Singing<br/><em>Voice Platform</em></h1></div><div className="status" role="status">{message}</div></header>
+    {error && <p className="error" role="alert">{error}</p>}
+    <section className="grid"><article className="panel convert"><h2>Convert a voice</h2><p>Preserve an existing singing performance using authorized source and reference audio.</p>
+      <form onSubmit={event => { event.preventDefault(); void queue("conversion"); }}><fieldset disabled={active}>
+        <label>Source audio<input required type="file" accept="audio/*" onChange={event => { setSong(event.target.files?.[0]); resetPreparation(); }}/></label>
+        <label>Voice reference<input required type="file" accept="audio/*" onChange={event => setReference(event.target.files?.[0])}/></label>
+        {select("Source type", inputKind, value => { setInputKind(value); resetPreparation(); }, <><option value="song">Song, separate stems first</option><option value="vocal">Vocal stem</option></>)}
+        {select("Input condition", condition, value => { setCondition(value); resetPreparation(); }, ["unknown", "clean_lead", "mixed_vocal", "separated_lead"].map(value => <option key={value}>{value}</option>))}
+        {select("Converter", converter, value => { setConverter(value); setConverterProfile(""); }, <>{defaults}{providers("svc")}</>, !!modelProfile)}
+        {select("Converter profile", converterProfile, setConverterProfile, <>{defaults}{profiles(converter, "svc")}</>, !!modelProfile)}
+        {select("Registered model", modelProfile, setModelProfile, <><option value="">Use provider configuration</option>{models.map(model => <option value={model.id} key={model.id}>{model.id} ({model.mode})</option>)}</>)}
+        {select("Separator", separator, value => { setSeparator(value); setSeparatorProfile(""); }, <>{defaults}{providers("separation")}</>, inputKind === "vocal" || !!prepared)}
+        {select("Separator profile", separatorProfile, setSeparatorProfile, <>{defaults}{profiles(separator, "separation")}</>, inputKind === "vocal" || !!prepared)}
+        {select("Vocal processing", vocalProfile, setVocalProfile, <>{defaults}{catalog.vocalProfiles.map(name => <option key={name}>{name}</option>)}</>, !!prepared)}
+        {select("Backend", backend, setBackend, ["auto", "cpu", "cuda", "rocm", "mps", "directml"].map(name => <option key={name}>{name}</option>))}
+        {select("Precision", precision, setPrecision, ["auto", "fp32", "fp16"].map(name => <option key={name}>{name}</option>))}
+        <label>Transpose (semitones)<input type="number" min={-12} max={12} step={1} required value={transpose} onChange={event => setTranspose(event.target.valueAsNumber)}/></label>
+        <label>Random seed<input type="number" min={0} max={4294967295} step={1} required value={seed} onChange={event => setSeed(event.target.valueAsNumber)}/></label>
+        <label className="checkbox"><input type="checkbox" checked={keep} onChange={event => setKeep(event.target.checked)}/>Keep intermediates</label>
+        <button type="button" disabled={!song} onClick={() => void queue("preparation")}>Prepare and listen to vocal sources</button>
+        {prepared && <div className="source-list"><p>Select a source explicitly before conversion.</p>{prepared.sources.map(source => <label className="source" key={source.id}><span><input type="radio" name="source" checked={selected === source.id} onChange={() => setSelected(source.id)}/>{source.label}</span><audio aria-label={source.label} controls preload="none" src={artifactUrl(source.artifact)}/></label>)}<button type="button" onClick={resetPreparation}>Use original source</button></div>}
+        <button disabled={!song || !reference || (!!prepared && !selected)}>Queue conversion</button>
+      </fieldset></form></article>
+      <aside className="panel"><h2>Voice models</h2>{models.length ? models.map(model => <div className="model" key={model.id}><strong>{model.id}</strong><span>{model.mode}</span><small>{model.status}</small></div>) : <p>No model registered. Provider defaults remain available after local asset setup.</p>}
+        <h2>Compare converters</h2><p>Both configurations use the original uploaded audio and seed. Missing assets produce a not-tested result.</p>
+        {select("Comparison converter", compare, setCompare, providers("svc"), active)}
+        <button disabled={active || !song || !reference || !Number.isInteger(seed) || !Number.isInteger(transpose)} onClick={() => void queue("benchmark")}>Run comparison</button>
+        <h3>Benchmark runs</h3>{runs.length ? runs.map(run => <button className="secondary" key={run.id} disabled={active} onClick={() => setJob(run)}>{run.id.slice(0, 12)}: {run.state}</button>) : <p>No benchmark runs yet.</p>}
+      </aside></section>
+    <section className="panel pipeline"><h2>Job progress</h2><p role="status">{job ? job.kind + ": " + job.state + " / " + job.stage : "No job selected"}</p><progress aria-label="Job progress" max={1} value={job?.progress ?? 0}/>
+      {job && !terminal(job) && <button onClick={async () => { try { setJob(parseJob(await post("/jobs/" + encodeURIComponent(job.id) + "/cancel", {}))); } catch (error) { setError(errorText(error)); } }}>Cancel job</button>}
+      {job?.error && <p className="error" role="alert">{job.error}</p>}</section>
+    {job && Object.keys(job.result).length > 0 && <Results key={job.id} job={job}/>}
+    <section className="panel results"><h2>Component capabilities</h2><p>Installed and configured do not mean model inference was verified. Compatibility is reported per provider.</p><div className="table-scroll"><table><thead><tr><th>Provider</th><th>State</th><th>Backend compatibility</th></tr></thead><tbody>{catalog.providers.map(provider => <tr key={provider.name}><th>{provider.name}<small>{provider.task} / {provider.stability}</small></th><td>{provider.installed ? "Installed" : "Not installed"}<br/>{provider.configured ? "Configured" : "Not configured"}</td><td>{Object.entries(provider.backends).map(([name, status]) => <div key={name}>{name}: {status}</div>)}{provider.warnings.map((warning, index) => <small key={index}>{warning}</small>)}</td></tr>)}</tbody></table></div></section>
+    <footer>Use only voices and music you own or are authorized to process. Unmeasured metrics are never displayed as scores.</footer>
   </main>;
 }
-
-createRoot(document.getElementById("root")!).render(<React.StrictMode><App/></React.StrictMode>);
-
+const root = document.getElementById("root");
+if (!root) throw new Error("Application root is missing");
+createRoot(root).render(<React.StrictMode><App/></React.StrictMode>);

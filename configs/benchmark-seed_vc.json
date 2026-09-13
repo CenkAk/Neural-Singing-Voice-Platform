@@ -1,0 +1,36 @@
+{
+  "name": "seed_vc explicit model benchmark",
+  "cases": [
+    {
+      "case_id": "clean_lead",
+      "source_artifact_id": "synthetic/b4c41eaec0e2f432/synthetic-clean_lead.wav",
+      "reference_artifact_id": "synthetic/b4c41eaec0e2f432/synthetic-clean_lead.wav",
+      "input_kind": "vocal",
+      "input_condition": "clean_lead"
+    },
+    {
+      "case_id": "mixed_vocal",
+      "source_artifact_id": "synthetic/e8b181dd9ed83bfe/synthetic-mixed_vocal.wav",
+      "reference_artifact_id": "synthetic/b4c41eaec0e2f432/synthetic-clean_lead.wav",
+      "input_kind": "vocal",
+      "input_condition": "mixed_vocal"
+    },
+    {
+      "case_id": "separated_lead",
+      "source_artifact_id": "synthetic/a7119e8fb44a07c0/synthetic-separated_lead.wav",
+      "reference_artifact_id": "synthetic/b4c41eaec0e2f432/synthetic-clean_lead.wav",
+      "input_kind": "vocal",
+      "input_condition": "separated_lead"
+    }
+  ],
+  "configurations": [
+    {
+      "configuration_id": "seed_vc",
+      "voice_converter": "seed_vc",
+      "converter_profile": "seed-baseline"
+    }
+  ],
+  "seeds": [
+    42
+  ]
+}

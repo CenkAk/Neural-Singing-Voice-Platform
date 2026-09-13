@@ -1,4 +1,5 @@
 .venv/
+.venv-v02/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -22,6 +23,7 @@ mlruns/
 *.db
 *.sqlite3
 apps/web/node_modules/
+apps/web/node_modules-v01-incomplete/
 apps/web/dist/
 *.tsbuildinfo
 .cache/

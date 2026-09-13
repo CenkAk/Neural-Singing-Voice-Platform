@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 import uuid
@@ -13,6 +14,7 @@ from typing import Any
 from .contracts import JobRecord, JobState
 from .errors import JobStateError, NSVPError
 
+logger = logging.getLogger(__name__)
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -60,6 +62,16 @@ class JobStore:
         if row is None:
             raise KeyError(job_id)
         return self._record(row)
+
+    def list(self, kind: str, limit: int = 50, offset: int = 0) -> list[JobRecord]:
+        if not 1 <= limit <= 200 or offset < 0:
+            raise ValueError("invalid job pagination")
+        with closing(self.connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM jobs WHERE kind=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                (kind, limit, offset),
+            ).fetchall()
+        return [self._record(row) for row in rows]
 
     def result(self, job_id: str) -> dict[str, Any] | None:
         with closing(self.connect()) as connection:
@@ -177,7 +189,8 @@ class Worker:
             self.store.succeed(job.id, result)
         except InterruptedError:
             self.store.mark_cancelled(job.id)
-        except Exception as exc:  # noqa: BLE001 - worker must persist all task failures
+        except Exception as exc:
+            logger.exception("Job failed: %s (%s)", job.id, job.kind)
             code = exc.code if isinstance(exc, NSVPError) else "unhandled_job_error"
             self.store.fail(job.id, {"code": code, "message": str(exc), "type": type(exc).__name__})
         return True

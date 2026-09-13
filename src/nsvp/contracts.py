@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Array = npt.NDArray[Any]
 FloatArray = npt.NDArray[np.float32]
@@ -67,6 +67,21 @@ class PitchTrack(BaseModel):
             raise ValueError("pitch arrays must be one-dimensional")
         return array
 
+    @model_validator(mode="after")
+    def consistent_frames(self) -> PitchTrack:
+        count = self.timestamps.size
+        if self.f0_hz.size != count or self.voiced.size != count:
+            raise ValueError("pitch timestamps, F0 and voicing must have equal lengths")
+        if self.confidence is not None and self.confidence.size != count:
+            raise ValueError("pitch confidence must have the same number of frames")
+        if not np.isfinite(self.timestamps).all() or not np.isfinite(self.f0_hz).all():
+            raise ValueError("pitch values must be finite")
+        if np.any(self.f0_hz < 0) or np.any(self.timestamps < 0):
+            raise ValueError("pitch timestamps and frequencies must be nonnegative")
+        if np.any(np.diff(self.timestamps) <= 0):
+            raise ValueError("pitch timestamps must be strictly increasing")
+        return self
+
 
 class FeatureSequence(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -94,6 +109,109 @@ class BackendCapabilities(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class TaskType(str, Enum):
+    SVC = "svc"
+    SVS = "svs"
+    SEPARATION = "separation"
+    PREPROCESSING = "preprocessing"
+    PITCH = "pitch"
+    MULTI_SINGER_SEPARATION = "multi_singer_separation"
+
+
+class ModelMode(str, Enum):
+    FINETUNED = "finetuned"
+    ZERO_SHOT_REFERENCE = "zero_shot_reference"
+
+
+class InputCondition(str, Enum):
+    CLEAN_LEAD = "clean_lead"
+    MIXED_VOCAL = "mixed_vocal"
+    SEPARATED_LEAD = "separated_lead"
+    UNKNOWN = "unknown"
+
+
+class CompatibilityStatus(str, Enum):
+    VERIFIED = "verified"
+    NOT_VERIFIED = "not_verified"
+    UNSUPPORTED = "unsupported"
+
+
+class ComponentCapabilities(BaseModel):
+    name: str
+    version: str = "unknown"
+    task: TaskType
+    stability: Literal["stable", "experimental", "research_reference", "test_only"]
+    sample_rates: list[int] = Field(default_factory=list)
+    zero_shot: bool = False
+    supports_training: bool = False
+    f0_conditioning: bool = False
+    midi_conditioning: bool = False
+    reference_audio_conditioning: bool = False
+    backends: dict[BackendName, CompatibilityStatus] = Field(default_factory=dict)
+    precisions: list[str] = Field(default_factory=lambda: ["fp32"])
+    maximum_tested_input_seconds: float | None = None
+    external_environment: bool = False
+    installed: bool = False
+    configured: bool = False
+    checkpoint_sha256: str | None = None
+    license_name: str | None = None
+    license_url: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ComponentExecution(BaseModel):
+    provider: str
+    profile: str | None = None
+    version: str = "unknown"
+    checkpoint_sha256: str | None = None
+    config_sha256: str | None = None
+    backend: BackendName
+    device_name: str
+    precision: str
+    python_version: str | None = None
+    torch_version: str | None = None
+    verification: CompatibilityStatus = CompatibilityStatus.NOT_VERIFIED
+    warnings: list[str] = Field(default_factory=list)
+
+
+class VocalSource(BaseModel):
+    source_id: str
+    audio: AudioBuffer
+    label: str | None = None
+
+
+class VocalProcessingResult(BaseModel):
+    selected: AudioBuffer
+    intermediates: dict[str, AudioBuffer] = Field(default_factory=dict)
+    sources: list[VocalSource] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class EvaluatorMetadata(BaseModel):
+    name: str
+    version: str
+    checkpoint_sha256: str | None = None
+    domain: str
+    limitations: list[str] = Field(default_factory=list)
+
+
+class MetricResult(BaseModel):
+    value: float | None = None
+    status: Literal["measured", "not_measured", "unsupported", "failed"] = "not_measured"
+    unit: str | None = None
+    reason: str | None = None
+    evaluator: EvaluatorMetadata | None = None
+
+    @model_validator(mode="after")
+    def valid_measurement(self) -> MetricResult:
+        if self.status == "measured":
+            if self.value is None or not np.isfinite(self.value):
+                raise ValueError("measured metrics require a finite value")
+        elif self.value is not None:
+            raise ValueError("unmeasured metrics must have a null value")
+        return self
+
+
 class ConversionRequest(BaseModel):
     song_path: Path
     target_reference_path: Path
@@ -103,6 +221,19 @@ class ConversionRequest(BaseModel):
     transpose_semitones: int = Field(default=0, ge=-12, le=12)
     backend: BackendName = BackendName.AUTO
     keep_intermediates: bool = True
+    separator: str | None = None
+    voice_converter: str | None = None
+    converter_profile: str | None = None
+    separator_profile: str | None = None
+    vocal_processing_profile: str | None = None
+    model_profile: str | None = None
+    precision: Literal["auto", "fp32", "fp16"] = "auto"
+    random_seed: int = Field(default=42, ge=0, le=2**32 - 1)
+    input_kind: Literal["song", "vocal"] = "song"
+    input_condition: InputCondition = InputCondition.UNKNOWN
+    instrumental_path: Path | None = None
+    preparation_manifest_artifact_id: str | None = None
+    selected_source_id: str | None = None
 
 
 class ConversionResult(BaseModel):
@@ -111,6 +242,8 @@ class ConversionResult(BaseModel):
     warnings: list[str]
     processing_time_seconds: float
     components: dict[str, str]
+    executions: dict[str, ComponentExecution] = Field(default_factory=dict)
+    input_condition: InputCondition = InputCondition.UNKNOWN
 
 
 class SegmentRecord(BaseModel):
@@ -143,12 +276,29 @@ class SingerModelManifest(BaseModel):
     architecture: str
     adapter: str
     sample_rate: int
-    dataset_version: str
-    checkpoint_sha256: str
-    checkpoint_artifact_id: str
+    mode: ModelMode = ModelMode.FINETUNED
+    task: TaskType = TaskType.SVC
+    provider: str | None = None
+    provider_profile: str | None = None
+    upstream_version: str | None = None
+    upstream_checkpoint_sha256: str | None = None
+    dataset_version: str | None = None
+    checkpoint_sha256: str | None = None
+    checkpoint_artifact_id: str | None = None
     observed_pitch_range_hz: tuple[float, float] | None = None
     evaluation_status: str = "not_measured"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> SingerModelManifest:
+        if self.mode is ModelMode.FINETUNED:
+            if not self.dataset_version or not self.checkpoint_sha256 or not self.checkpoint_artifact_id:
+                raise ValueError("fine-tuned models require dataset and singer checkpoint metadata")
+        elif self.checkpoint_artifact_id or self.checkpoint_sha256 or self.dataset_version:
+            raise ValueError("zero-shot profiles must not contain singer-specific checkpoint metadata")
+        if self.mode is ModelMode.ZERO_SHOT_REFERENCE and not self.provider:
+            raise ValueError("zero-shot profiles require a provider")
+        return self
 
 
 class JobState(str, Enum):
@@ -184,3 +334,6 @@ class EvaluationReport(BaseModel):
     raw_chroma_accuracy: float | None = None
     singer_similarity: float | None = None
     limitations: list[str] = Field(default_factory=list)
+    schema_version: str = "0.2"
+    families: dict[str, dict[str, MetricResult]] = Field(default_factory=dict)
+    input_condition: InputCondition = InputCondition.UNKNOWN

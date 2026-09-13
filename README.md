@@ -4,9 +4,11 @@ A modular Audio ML platform for converting authorized songs into a voice model t
 
 > This project is for consent-based voice conversion. Do not use it to impersonate people or process music/voices without permission.
 
-## Current verified state
+## v0.2 status
 
-The dependency-light pipeline is implemented and tested with generated audio. Demucs, TorchCREPE, Seed-VC, MLflow, GPU backends, and real singer quality require their optional dependencies, reviewed weights, authorized audio, and hardware-specific validation. No quality or performance result is claimed before measurement.
+The dependency-light pipeline, provider selection, vocal preparation, evaluation families, dataset audits, benchmark jobs and UI build are tested with generated audio. Seed-VC and Demucs remain defaults. SoulX-Singer-SVC is an optional experimental adapter with its own Python environment and explicitly provisioned offline assets. Real model inference and model/backend compatibility remain `not_tested` / `not_verified` in this checkout.
+
+See [v0.2 migration and operation](docs/V02_GUIDE.md), [provider capabilities](docs/reports/provider-capabilities.json), and the generated [synthetic comparison report](docs/reports/synthetic-benchmark.html). The synthetic report tests orchestration and metrics, not singer quality. Browser checks covered desktop/mobile layout, upload, preparation, explicit source selection, playback and benchmark result rendering.
 
 ## Architecture
 
@@ -16,10 +18,11 @@ flowchart LR
   V --> M["Immutable dataset manifest"]
   M --> T["Seed-VC fine-tuning bridge"]
   T --> R["Singer model registry"]
-  S["Authorized song"] --> X["Demucs separator"]
+  S["Authorized song"] --> X["Configured separator, Demucs default"]
   X --> VO["Vocal stem"]
   X --> IN["Instrumental stem"]
-  VO --> C["Seed-VC adapter"]
+  VO --> PRE["Optional vocal processing, no-op default"]
+  PRE --> C["Configured SVC, Seed-VC or experimental SoulX"]
   R --> C
   C --> P["Conservative post-processing"]
   P --> MIX["Gain-safe mixer"]
@@ -35,7 +38,7 @@ Long-running work is persisted as a SQLite job and executed by a separate worker
 - NumPy/Pydantic core, SoundFile/SciPy audio extras, PyTorch backend-specific ML extras.
 - Demucs `htdemucs` adapter for vocals/instrumental stems.
 - Seed-VC v1 adapter requiring explicit repository, checkpoint, and config paths.
-- TorchCREPE default production analysis F0; PyWORLD and dependency-light autocorrelation alternatives.
+- Autocorrelation is the default diagnostic F0 extractor; PyWORLD and TorchCREPE are optional analysis alternatives. No extractor quality claim is implied.
 - SQLite local jobs, FastAPI API, React/Vite UI, MLflow experiment bridge.
 
 ## Install
@@ -66,8 +69,8 @@ Generated WAV fixtures exercise validation, segmentation, F0 metrics, artifacts,
    ```
 
 2. Download the reviewed 44.1 kHz F0-conditioned SVC checkpoint separately.
-3. Set `seed_vc_root`, `seed_vc_checkpoint`, and `seed_vc_config` in `configs/default.yaml`.
-4. Install the backend-specific PyTorch build plus `.[audio,separation,ml]`.
+3. Set `providers.seed_vc.repository_root`, `checkpoint_path`, `config_path`, and a reviewed full `revision` in `configs/default.yaml`. Set its `python_executable` to the separately installed upstream environment.
+4. Provision all auxiliary weights locally. Set `providers.demucs.python_executable` and `model_repository` to a local Demucs environment and model repository. See [asset requirements](docs/V02_GUIDE.md).
 5. Run:
 
    ```powershell
@@ -86,12 +89,12 @@ pnpm install
 pnpm dev
 ```
 
-The API exposes health/capabilities, uploads, models, dataset analysis jobs, conversion jobs, cancellation, artifacts, and Prometheus-compatible job counts. The local SQLite profile supports one worker; distributed scheduling is intentionally not claimed.
+The API exposes health/capabilities, uploads, models, dataset analysis, vocal preparation, conversion, evaluation and benchmark jobs, cancellation, artifacts, and Prometheus-compatible job counts. The UI selects providers/profiles, backend, precision and transposition; plays source/output artifacts; and displays metric status and benchmark results. The local SQLite profile supports one worker.
 
 ## Testing
 
 ```powershell
-pytest
+pytest -m "not model and not gpu"
 ruff check src tests
 mypy src/nsvp
 ```
@@ -101,7 +104,9 @@ Model/GPU tests are marked separately. Real hardware results must not be claimed
 ## Repository map
 
 - `src/nsvp/audio`: decoding, preprocessing, segmentation, mixing.
-- `src/nsvp/adapters`: Demucs and Seed-VC boundaries.
+- `src/nsvp/adapters`: Demucs, Seed-VC, SoulX and external Python runners.
+- `src/nsvp/components.py`: provider and profile resolution.
+- `src/nsvp/benchmarking.py`: reproducible case/configuration/seed matrices and JSON/HTML reports.
 - `src/nsvp/datasets.py`: deterministic datasets and reports.
 - `src/nsvp/pipeline.py`: conversion orchestration.
 - `src/nsvp/jobs.py`, `api.py`: durable local jobs and service API.
@@ -110,4 +115,4 @@ Model/GPU tests are marked separately. Real hardware results must not be claimed
 
 ## Limitations
 
-Source separation bleed, reverb, backing vocals, limited training range, extreme techniques, high notes, language coverage, and speech-trained similarity embeddings can all reduce quality. V1 treats all vocals as one stem. Real-time conversion, cloud object storage, distributed workers, and multi-user production security are future designs, not implemented claims.
+Source separation bleed, reverb, backing vocals, limited training range, extreme techniques, high notes, language coverage, and speech-trained similarity embeddings can all reduce quality. Default separation treats vocals as one stem. Multi-singer contracts and explicit source selection exist, but the real UNMIXX integration is deferred. Content and timbre metrics remain null without a reviewed evaluator. SVS, real-time conversion, cloud storage, distributed workers and user accounts are outside v0.2.

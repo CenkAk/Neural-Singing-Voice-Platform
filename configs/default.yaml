@@ -13,7 +13,49 @@ audio:
 artifact_root: artifacts
 database_path: artifacts/nsvp.sqlite3
 model_cache: artifacts/model-cache
-seed_vc_root: null
-seed_vc_checkpoint: null
-seed_vc_config: null
-
+components:
+  separator: {provider: demucs}
+  voice_converter: {provider: seed_vc}
+  vocal_preprocessor: {provider: none}
+  pitch_extractor: {provider: autocorrelation}
+providers:
+  demucs:
+    python_executable: null
+    model: htdemucs
+    model_repository: null
+  seed_vc:
+    repository_root: null
+    python_executable: null
+    checkpoint_path: null
+    config_path: null
+    revision: null
+    huggingface_cache: null
+    diffusion_steps: 30
+    timeout_seconds: 1800
+  soulx_singer:
+    repository_root: null
+    python_executable: null
+    checkpoint_path: null
+    config_path: null
+    revision: null
+    rmvpe_checkpoint_path: null
+    huggingface_cache: null
+    whisper_revision: null
+    n_steps: 32
+    cfg: 3.0
+    use_fp16: false
+    timeout_seconds: 1800
+  autocorrelation: {fmin: 50, fmax: 1100}
+profiles:
+  seed-baseline: {provider: seed_vc, settings: {diffusion_steps: 30}}
+  soulx-experimental: {provider: soulx_singer, settings: {n_steps: 32, cfg: 3.0}}
+vocal_processing_profiles:
+  neutral: {stages: [{provider: none}]}
+dataset_audit:
+  enabled: true
+  pitch_percentiles: [5, 25, 50, 75, 95]
+  midi_bin_edges: [24, 36, 48, 60, 72, 84, 96, 108]
+  narrow_range_semitones: 12
+  silence_threshold_db: -45
+# Optional, local SQLite database inside artifact_root only.
+mlflow_tracking_uri: null

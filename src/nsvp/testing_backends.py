@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .contracts import AudioBuffer, StemSet
+from .contracts import AudioBuffer, EvaluatorMetadata, MetricResult, StemSet, VocalSource
 
 
 class DeterministicSeparator:
@@ -28,3 +28,34 @@ class IdentityVoiceConverter:
             raise ValueError("test converter does not implement transposition")
         return source_vocal
 
+
+class DeterministicMultiSingerSeparator:
+    """Synthetic sources for source-selection tests, not actual singer separation."""
+
+    name = "deterministic-test-multi-singer"
+
+    def separate_singers(self, audio: AudioBuffer, work_dir: Path) -> list[VocalSource]:
+        return [
+            VocalSource(source_id="source-a", audio=audio, label="Synthetic source A"),
+            VocalSource(source_id="source-b", audio=AudioBuffer(
+                waveform=(audio.waveform * 0.5).astype(np.float32), sample_rate=audio.sample_rate,
+            ), label="Synthetic source B"),
+        ]
+
+
+class UnmeasuredContentEvaluator:
+    """Test double for metadata propagation without invented linguistic scores."""
+
+    metadata = EvaluatorMetadata(name="test-content", version="1", domain="synthetic", limitations=["No ASR model is executed."])
+
+    def evaluate(self, source: AudioBuffer, output: AudioBuffer) -> dict[str, MetricResult]:
+        return {"wer": MetricResult(reason="Test evaluator does not measure linguistic content.")}
+
+
+class UnmeasuredSingerEvaluator:
+    """Test double for optional singer evaluation without synthetic identity claims."""
+
+    metadata = EvaluatorMetadata(name="test-singer", version="1", domain="synthetic", limitations=["No singer model is executed."])
+
+    def evaluate(self, reference: AudioBuffer, output: AudioBuffer) -> MetricResult:
+        return MetricResult(reason="Test evaluator does not measure singer identity.")

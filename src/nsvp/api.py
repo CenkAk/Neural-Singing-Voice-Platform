@@ -4,10 +4,22 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from .api_contracts import (
+    ConversionJobRequest,
+    DatasetJobRequest,
+    EvaluationJobRequest,
+    SeparationJobRequest,
+    TrainingJobRequest,
+    VocalPreparationRequest,
+)
+from .benchmarking import BenchmarkSpec, public_config_snapshot
+from .components import ComponentFactory
 from .config import AppConfig, load_config
+from .contracts import JobRecord
 from .device import DeviceManager
-from .errors import ArtifactNotFoundError
+from .errors import ArtifactNotFoundError, ConfigurationError, JobStateError
 from .jobs import JobStore
+from .preparation import resolve_conversion_request
 from .registry import ModelRegistry
 from .storage import LocalArtifactStore
 
@@ -15,50 +27,63 @@ MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
 ALLOWED_AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus"}
 
 
-def create_app(config: AppConfig | None = None) -> Any:
+def create_app(config: AppConfig | None = None, factory: ComponentFactory | None = None) -> Any:
     if importlib.util.find_spec("fastapi") is None:
         raise RuntimeError("FastAPI is not installed; install the 'api' dependency group")
     from fastapi import FastAPI, File, HTTPException, UploadFile
     from fastapi.responses import FileResponse, PlainTextResponse
-    from pydantic import BaseModel
 
     active = config or load_config()
     store = LocalArtifactStore(active.artifact_root)
     jobs = JobStore(active.database_path)
     registry = ModelRegistry(active.artifact_root / "models", store)
-    app = FastAPI(title="Neural Singing Voice Platform", version="0.1.0")
+    components = factory or ComponentFactory(active)
+    app = FastAPI(title="Neural Singing Voice Platform", version="0.2.0")
 
-    class DatasetJobRequest(BaseModel):
-        source_root: Path
-        singer_name: str
+    def public_job(job: JobRecord, include_result: bool = False) -> dict[str, Any]:
+        response = job.model_dump(mode="json")
+        response["payload"] = public_config_snapshot(job.payload)
+        if job.error:
+            response["error"] = {
+                "code": job.error.get("code", "job_failed"),
+                "message": "The job failed. Check the selected providers and worker logs.",
+            }
+        if include_result:
+            response["result"] = public_config_snapshot(jobs.result(job.id) or {})
+        return response
 
-    class ConversionJobRequest(BaseModel):
-        song_artifact_id: str
-        reference_artifact_id: str
-        output_name: str
-        transpose_semitones: int = 0
-
-    class SeparationJobRequest(BaseModel):
-        song_artifact_id: str
-
-    class TrainingJobRequest(BaseModel):
-        manifest_artifact_id: str
-        training_config_artifact_id: str
-        run_name: str
-        resume_artifact_id: str | None = None
+    def require_artifact(artifact_id: str) -> Path:
+        try:
+            return store.resolve(artifact_id)
+        except (ArtifactNotFoundError, ValueError):
+            raise HTTPException(status_code=404, detail="Audio or report artifact not found") from None
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok", "version": "0.1.0"}
+        return {"status": "ok", "version": "0.2.0"}
 
     @app.get("/capabilities")
-    def capabilities() -> dict[str, Any]:
+    def capabilities(probe: bool = False) -> dict[str, Any]:
         manager = DeviceManager()
-        return (
+        core = (
             manager.report_without_torch().model_dump(mode="json")
             if importlib.util.find_spec("torch") is None
             else manager.detect(active.device.backend).capabilities.model_dump(mode="json")
         )
+        return {**core, "components": [item.model_dump(mode="json") for item in components.capabilities(probe)]}
+
+    @app.get("/components")
+    def available_components(probe: bool = False) -> list[dict[str, Any]]:
+        return [item.model_dump(mode="json") for item in components.capabilities(probe)]
+
+    @app.get("/providers")
+    def configured_providers() -> dict[str, Any]:
+        return {
+            "defaults": active.components.model_dump(mode="json"),
+            "profiles": {name: {"provider": profile.provider} for name, profile in active.profiles.items()},
+            "vocal_processing_profiles": sorted(active.vocal_processing_profiles),
+            "providers": [item.model_dump(mode="json") for item in components.capabilities()],
+        }
 
     @app.get("/models")
     def models() -> list[dict[str, Any]]:
@@ -87,55 +112,115 @@ def create_app(config: AppConfig | None = None) -> Any:
         upload_dir.mkdir(parents=True, exist_ok=True)
         temporary = upload_dir / f"{uuid.uuid4().hex}{suffix}"
         size = 0
-        with temporary.open("wb") as stream:
-            while chunk := await file.read(1024 * 1024):
-                size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
-                    temporary.unlink(missing_ok=True)
-                    raise HTTPException(status_code=413, detail="upload exceeds 1 GiB limit")
-                stream.write(chunk)
-        artifact_id = store.put_file(temporary, "uploads", temporary.name)
-        temporary.unlink(missing_ok=True)
+        try:
+            with temporary.open("wb") as stream:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_BYTES:
+                        raise HTTPException(status_code=413, detail="upload exceeds 1 GiB limit")
+                    stream.write(chunk)
+            artifact_id = store.put_file(temporary, "uploads", temporary.name)
+        finally:
+            temporary.unlink(missing_ok=True)
         return {"artifact_id": artifact_id}
 
     @app.post("/datasets/analyze", status_code=202)
     def analyze_dataset(request: DatasetJobRequest) -> dict[str, Any]:
-        if not request.source_root.resolve().is_dir():
-            raise HTTPException(status_code=400, detail="dataset directory does not exist")
-        return jobs.enqueue("dataset_analyze", request.model_dump(mode="json")).model_dump(mode="json")
+        for artifact_id in request.source_artifact_ids:
+            require_artifact(artifact_id)
+        return public_job(jobs.enqueue("dataset_analyze", request.model_dump(mode="json")))
 
     app.add_api_route("/datasets", analyze_dataset, methods=["POST"], status_code=202)
 
     @app.post("/conversion-jobs", status_code=202)
     def conversion_job(request: ConversionJobRequest) -> dict[str, Any]:
-        song = store.resolve(request.song_artifact_id)
-        reference = store.resolve(request.reference_artifact_id)
-        payload = {
-            "song_path": str(song), "target_reference_path": str(reference), "output_name": request.output_name,
-            "transpose_semitones": request.transpose_semitones, "model_name": "seed-vc-v1", "model_version": "configured",
-            "backend": active.device.backend.value, "keep_intermediates": True,
-        }
-        return jobs.enqueue("conversion", payload).model_dump(mode="json")
+        payload = request.model_dump(mode="json")
+        try:
+            resolved = resolve_conversion_request(payload, store)
+            components.validate_conversion_selection(resolved)
+        except (ArtifactNotFoundError, ValueError, ConfigurationError):
+            raise HTTPException(status_code=400, detail="Invalid source, reference, model, or processing selection") from None
+        return public_job(jobs.enqueue("conversion", payload))
 
     app.add_api_route("/convert", conversion_job, methods=["POST"], status_code=202)
 
     @app.post("/separation-jobs", status_code=202)
     def separation_job(request: SeparationJobRequest) -> dict[str, Any]:
-        store.resolve(request.song_artifact_id)
-        payload = {"song_artifact_id": request.song_artifact_id, "job_namespace": uuid.uuid4().hex}
-        return jobs.enqueue("separation", payload).model_dump(mode="json")
+        require_artifact(request.song_artifact_id)
+        payload = {**request.model_dump(mode="json"), "job_namespace": uuid.uuid4().hex}
+        return public_job(jobs.enqueue("separation", payload))
 
     app.add_api_route("/separate", separation_job, methods=["POST"], status_code=202)
 
     @app.post("/training-jobs", status_code=202)
     def training_job(request: TrainingJobRequest) -> dict[str, Any]:
-        store.resolve(request.manifest_artifact_id)
-        store.resolve(request.training_config_artifact_id)
+        require_artifact(request.manifest_artifact_id)
+        require_artifact(request.training_config_artifact_id)
         if request.resume_artifact_id:
-            store.resolve(request.resume_artifact_id)
-        return jobs.enqueue("training", request.model_dump(mode="json")).model_dump(mode="json")
+            require_artifact(request.resume_artifact_id)
+        if request.provider != "seed_vc":
+            raise HTTPException(status_code=400, detail="This provider does not support training in v0.2")
+        return public_job(jobs.enqueue("training", request.model_dump(mode="json")))
 
     app.add_api_route("/models/train", training_job, methods=["POST"], status_code=202)
+
+    @app.post("/vocal-preparation-jobs", status_code=202)
+    def prepare_vocal_job(request: VocalPreparationRequest) -> dict[str, Any]:
+        require_artifact(request.source_artifact_id)
+        try:
+            components.build_vocal_preprocessors(request.vocal_processing_profile)
+            if request.multi_singer_separator:
+                components.build_multi_singer_separator(request.multi_singer_separator)
+        except ConfigurationError:
+            raise HTTPException(status_code=400, detail="Vocal processing provider is not available") from None
+        return public_job(jobs.enqueue("vocal_preparation", request.model_dump(mode="json")))
+
+    @app.post("/evaluation-jobs", status_code=202)
+    def evaluation_job(request: EvaluationJobRequest) -> dict[str, Any]:
+        for artifact_id in (request.source_artifact_id, request.output_artifact_id, request.reference_artifact_id,
+            request.ground_truth_stem_artifact_id, request.separated_stem_artifact_id):
+            if artifact_id:
+                require_artifact(artifact_id)
+        return public_job(jobs.enqueue("evaluation", request.model_dump(mode="json")))
+
+    @app.post("/benchmark-runs", status_code=202)
+    def benchmark_run(request: BenchmarkSpec) -> dict[str, Any]:
+        for case in request.cases:
+            for artifact_id in (case.source_artifact_id, case.reference_artifact_id, case.ground_truth_stem_artifact_id, case.instrumental_artifact_id):
+                if artifact_id:
+                    require_artifact(artifact_id)
+        return public_job(jobs.enqueue("benchmark", request.model_dump(mode="json")))
+
+    def list_kind(kind: str, limit: int, offset: int) -> list[dict[str, Any]]:
+        try:
+            return [public_job(job, include_result=True) for job in jobs.list(kind, limit, offset)]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid pagination") from None
+
+    @app.get("/benchmark-runs")
+    def benchmark_runs(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        return list_kind("benchmark", limit, offset)
+
+    @app.get("/evaluations")
+    def evaluations(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        return list_kind("evaluation", limit, offset)
+
+    def get_kind(job_id: str, kind: str) -> dict[str, Any]:
+        try:
+            job = jobs.get(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Run not found") from None
+        if job.kind != kind:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return public_job(job, include_result=True)
+
+    @app.get("/benchmark-runs/{job_id}")
+    def benchmark_detail(job_id: str) -> dict[str, Any]:
+        return get_kind(job_id, "benchmark")
+
+    @app.get("/evaluations/{job_id}")
+    def evaluation_detail(job_id: str) -> dict[str, Any]:
+        return get_kind(job_id, "evaluation")
 
     @app.get("/jobs/{job_id}")
     def get_job(job_id: str) -> dict[str, Any]:
@@ -143,16 +228,16 @@ def create_app(config: AppConfig | None = None) -> Any:
             job = jobs.get(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="job not found")
-        response = job.model_dump(mode="json")
-        response["result"] = jobs.result(job_id)
-        return response
+        return public_job(job, include_result=True)
 
     @app.post("/jobs/{job_id}/cancel")
     def cancel_job(job_id: str) -> dict[str, Any]:
         try:
-            return jobs.cancel(job_id).model_dump(mode="json")
+            return public_job(jobs.cancel(job_id))
         except KeyError:
             raise HTTPException(status_code=404, detail="job not found")
+        except JobStateError:
+            raise HTTPException(status_code=409, detail="Completed jobs cannot be cancelled") from None
 
     @app.get("/jobs/{job_id}/artifacts")
     def job_artifacts(job_id: str) -> dict[str, Any]:
@@ -165,7 +250,7 @@ def create_app(config: AppConfig | None = None) -> Any:
     @app.get("/jobs/{job_id}/report")
     def job_report(job_id: str) -> dict[str, Any]:
         try:
-            return {"job": jobs.get(job_id).model_dump(mode="json"), "result": jobs.result(job_id)}
+            return {"job": public_job(jobs.get(job_id)), "result": public_config_snapshot(jobs.result(job_id) or {})}
         except KeyError:
             raise HTTPException(status_code=404, detail="job not found")
 
