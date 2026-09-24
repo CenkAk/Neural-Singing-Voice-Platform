@@ -30,10 +30,14 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: "24" }
       - run: corepack enable
-      - run: pnpm --dir apps/web install --frozen-lockfile
-      - run: pnpm --dir apps/web lint
-      - run: pnpm --dir apps/web test
-      - run: pnpm --dir apps/web build
+      - run: pnpm install --frozen-lockfile
+        working-directory: apps/web
+      - run: pnpm lint
+        working-directory: apps/web
+      - run: pnpm test
+        working-directory: apps/web
+      - run: pnpm build
+        working-directory: apps/web
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e ".[audio,api]"

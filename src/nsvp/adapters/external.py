@@ -77,6 +77,9 @@ def run_external(
     if log_directory is not None:
         log_directory.mkdir(parents=True, exist_ok=True)
     prefix = uuid.uuid4().hex + "-"
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = subprocess.CREATE_NO_WINDOW
     # Files prevent a verbose provider from blocking on full pipes or exhausting RAM.
     with (
         device_lock(device),
@@ -89,7 +92,7 @@ def run_external(
             process = subprocess.Popen(
                 command, cwd=cwd.resolve(), stdout=stdout, stderr=stderr,
                 env=env if env is not None else offline_environment(),
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                creationflags=creationflags,
                 start_new_session=os.name != "nt",
             )
         except OSError as exc:
