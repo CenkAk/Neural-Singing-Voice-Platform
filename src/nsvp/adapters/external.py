@@ -39,7 +39,9 @@ def offline_environment(cache: Path | None = None) -> dict[str, str]:
     return env
 
 
-def terminate_process_tree(pid: int, created_at: float, grace_seconds: float = 5) -> bool:
+def terminate_process_tree(
+    pid: int, created_at: float, grace_seconds: float = 5, *, owner: subprocess.Popen[bytes] | None = None,
+) -> bool:
     """Only terminate the recorded process identity, never a reused PID."""
     try:
         parent = psutil.Process(pid)
@@ -53,6 +55,14 @@ def terminate_process_tree(pid: int, created_at: float, grace_seconds: float = 5
             process.terminate()
         except psutil.NoSuchProcess:
             pass
+    if owner is not None:
+        # Only Popen may reap its child; psutil.wait_procs would consume the POSIX exit status.
+        processes.remove(parent)
+        try:
+            owner.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            owner.kill()
+            owner.wait(timeout=5)
     _, alive = psutil.wait_procs(processes, timeout=grace_seconds)
     for process in alive:
         try:
@@ -127,7 +137,7 @@ def run_external(
             check_cancelled()
         except BaseException:
             if created_at is not None:
-                if not terminate_process_tree(process.pid, created_at):
+                if not terminate_process_tree(process.pid, created_at, owner=process):
                     raise ExternalExecutionError("External process tree could not be stopped") from None
             elif process.poll() is None:
                 process.kill()
