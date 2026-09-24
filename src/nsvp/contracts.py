@@ -188,11 +188,16 @@ class VocalProcessingResult(BaseModel):
 
 
 class EvaluatorMetadata(BaseModel):
+    library_version: str | None = None
     name: str
     version: str
     checkpoint_sha256: str | None = None
     domain: str
     limitations: list[str] = Field(default_factory=list)
+    model: str | None = None
+    language: str | None = None
+    reference_kind: str | None = None
+    normalization_version: str | None = None
 
 
 class MetricResult(BaseModel):
@@ -234,6 +239,19 @@ class ConversionRequest(BaseModel):
     instrumental_path: Path | None = None
     preparation_manifest_artifact_id: str | None = None
     selected_source_id: str | None = None
+    language: Literal["tr", "en"] | None = None
+    reference_text: str | None = Field(default=None, max_length=20000)
+
+
+class ProcessTelemetry(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+    elapsed_seconds: float = Field(ge=0)
+    sampled_peak_rss_bytes: int | None = Field(default=None, ge=0)
+    samples: int = Field(ge=0)
+    missed_samples: int = Field(ge=0)
+    sampling_interval_seconds: float = Field(default=0.1, gt=0)
+    scope: Literal["provider_process_tree_rss_sum"] = "provider_process_tree_rss_sum"
+    returncode: int | None = None
 
 
 class ConversionResult(BaseModel):
@@ -244,6 +262,7 @@ class ConversionResult(BaseModel):
     components: dict[str, str]
     executions: dict[str, ComponentExecution] = Field(default_factory=dict)
     input_condition: InputCondition = InputCondition.UNKNOWN
+    provider_process: ProcessTelemetry | None = None
 
 
 class SegmentRecord(BaseModel):
@@ -304,6 +323,7 @@ class SingerModelManifest(BaseModel):
 class JobState(str, Enum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    CANCELLING = "CANCELLING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -320,6 +340,19 @@ class JobRecord(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    attempt_count: int = 0
+    worker_id: str | None = None
+    heartbeat_at: datetime | None = None
+
+
+class PitchPreview(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+    source: list[tuple[float, float | None]] = Field(max_length=1000)
+    output: list[tuple[float, float | None]] = Field(max_length=1000)
+    source_extractor: str
+    output_extractor: str
+    source_transpose_semitones: int
+    sampling: str = "At most 1000 evenly selected frames per track; unvoiced frames are null; no interpolation"
 
 
 class EvaluationReport(BaseModel):
@@ -337,3 +370,4 @@ class EvaluationReport(BaseModel):
     schema_version: str = "0.2"
     families: dict[str, dict[str, MetricResult]] = Field(default_factory=dict)
     input_condition: InputCondition = InputCondition.UNKNOWN
+    pitch_preview: PitchPreview | None = None

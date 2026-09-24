@@ -19,6 +19,10 @@ components:
   vocal_preprocessor: {provider: none}
   pitch_extractor: {provider: autocorrelation}
 providers:
+  studio_clean:
+    target_lufs: -23
+    maximum_gain_db: 12
+    peak_ceiling: 0.98
   demucs:
     python_executable: null
     model: htdemucs
@@ -51,6 +55,7 @@ profiles:
   soulx-experimental: {provider: soulx_singer, settings: {n_steps: 32, cfg: 3.0}}
 vocal_processing_profiles:
   neutral: {stages: [{provider: none}]}
+  studio-clean: {stages: [{provider: studio_clean}]}
 dataset_audit:
   enabled: true
   pitch_percentiles: [5, 25, 50, 75, 95]
@@ -59,3 +64,18 @@ dataset_audit:
   silence_threshold_db: -45
 # Optional, local SQLite database inside artifact_root only.
 mlflow_tracking_uri: null
+# Each evaluator runs in its configured environment using reviewed local weights.
+# Enabled evaluators require a Python executable separate from the NSVP core environment.
+evaluation:
+  content:
+    enabled: false
+    python_executable: null
+    model_directory: null
+    model_name: null
+    revision: null
+  singer:
+    enabled: false
+    python_executable: null
+    model_directory: null
+    model_name: null
+    revision: null

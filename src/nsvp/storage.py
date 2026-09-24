@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .errors import ArtifactNotFoundError
+from .execution import check_cancelled
 
 
 class ArtifactStore(Protocol):
@@ -61,9 +62,10 @@ class LocalArtifactStore:
 
 
 def sha256_file(path: Path) -> str:
+    check_cancelled()
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            check_cancelled()
             digest.update(chunk)
     return digest.hexdigest()
-

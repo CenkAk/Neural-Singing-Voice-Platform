@@ -11,12 +11,18 @@ class APIRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ReproduceJobRequest(APIRequest):
+    manifest_artifact_id: str
+
+
 class DatasetJobRequest(APIRequest):
     source_artifact_ids: list[str] = Field(min_length=1)
     singer_name: str = Field(min_length=1, pattern=r"^[^/\\:\x00]+$")
 
 
 class ConversionJobRequest(APIRequest):
+    language: Literal["tr", "en"] | None = None
+    reference_text: str | None = Field(default=None, max_length=20000)
     song_artifact_id: str | None = None
     reference_artifact_id: str
     output_name: str = Field(min_length=1)
@@ -100,6 +106,8 @@ class TrainingJobRequest(APIRequest):
 
 
 class EvaluationJobRequest(APIRequest):
+    language: Literal["tr", "en"] | None = None
+    reference_text: str | None = Field(default=None, max_length=20000)
     source_artifact_id: str
     output_artifact_id: str
     reference_artifact_id: str | None = None

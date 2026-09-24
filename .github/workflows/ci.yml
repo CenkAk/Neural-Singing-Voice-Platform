@@ -2,17 +2,58 @@ name: CI
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.10" }
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: windows-latest, python: "3.10" }
+          - { os: windows-latest, python: "3.12" }
+          - { os: macos-latest, python: "3.12" }
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.10" }
+        with: { python-version: "${{ matrix.python }}" }
       - run: pip install -e ".[audio,api,dev]"
       - run: ruff check src tests
       - run: mypy src/nsvp
       - run: pytest -m "not model and not gpu" --cov=nsvp
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v5
         with: { node-version: "24" }
       - run: corepack enable
       - run: pnpm --dir apps/web install --frozen-lockfile
+      - run: pnpm --dir apps/web lint
+      - run: pnpm --dir apps/web test
       - run: pnpm --dir apps/web build
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[audio,api]"
+      - name: Install browser test runtime
+        run: |
+          npm install --prefix "$RUNNER_TEMP/nsvp-browser" --no-package-lock playwright@1.62.1
+          "$RUNNER_TEMP/nsvp-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Verify blind listening with disposable data
+        timeout-minutes: 5
+        run: |
+          python scripts/browser_fixture.py > "$RUNNER_TEMP/nsvp-browser.log" 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true; wait "$fixture_pid" 2>/dev/null || true; cat "$RUNNER_TEMP/nsvp-browser.log"' EXIT
+          for attempt in $(seq 1 60); do
+            kill -0 "$fixture_pid" || exit 1
+            if curl --fail --silent http://127.0.0.1:8873/__fixture__ > /dev/null; then
+              NSVP_PLAYWRIGHT_MODULE="$RUNNER_TEMP/nsvp-browser/node_modules/playwright" node scripts/test_listening_browser.cjs
+              exit $?
+            fi
+            sleep 1
+          done
+          echo "Browser fixture did not become ready within 60 seconds"
+          exit 1

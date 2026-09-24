@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from test_dataset_pipeline import fixture_audio
 
 from nsvp.contracts import AudioBuffer, EvaluatorMetadata, MetricResult, PitchTrack
-from nsvp.evaluation import evaluate_audio, evaluate_pitch
+from nsvp.evaluation import evaluate_audio, evaluate_pitch, preview_frames
 from nsvp.fidelity import evaluate_fidelity, evaluate_separation
 
 
@@ -51,9 +51,27 @@ def test_metric_states_do_not_allow_fabricated_values() -> None:
     with pytest.raises(ValidationError):
         MetricResult(status="measured", value=float("nan"))
     report = evaluate_audio(fixture_audio(), fixture_audio())
-    assert set(report.families) == {"pitch", "content", "timbre", "fidelity", "separation"}
+    assert set(report.families) == {"pitch", "content", "timbre", "fidelity", "separation", "performance"}
+    assert report.families["performance"]["pipeline_seconds"].value is None
     assert report.families["timbre"]["singer_similarity"].value is None
     assert report.families["content"]["wer"].status == "not_measured"
+    assert report.pitch_preview is None
+
+
+def test_pitch_preview_preserves_times_gaps_and_transposition() -> None:
+    source = PitchTrack(timestamps=np.array([0, 0.1, 0.3]), f0_hz=np.array([100, 200, 300]),
+        voiced=np.array([True, False, True]), extractor="fixture")
+    report = evaluate_audio(fixture_audio(), fixture_audio(), source, source, transpose_semitones=12)
+    assert report.pitch_preview is not None
+    assert report.pitch_preview.source == [(0, 200), (0.1, None), (0.3, 600)]
+    assert report.pitch_preview.output == [(0, 100), (0.1, None), (0.3, 300)]
+    assert report.pitch_preview.source_transpose_semitones == 12
+    long = PitchTrack(timestamps=np.arange(2001) / 100, f0_hz=np.full(2001, 220),
+        voiced=np.ones(2001, dtype=bool), extractor="fixture")
+    sampled = preview_frames(long)
+    assert len(sampled) == 1000 and sampled[0][0] == 0 and sampled[-1][0] == 20
+    empty = PitchTrack(timestamps=np.array([]), f0_hz=np.array([]), voiced=np.array([]), extractor="fixture")
+    assert preview_frames(empty) == []
 
 
 def test_optional_evaluator_failure_is_explicit() -> None:

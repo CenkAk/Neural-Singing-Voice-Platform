@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import platform
+import statistics
 import subprocess
 import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,6 +27,7 @@ from .contracts import (
 )
 from .errors import BackendUnavailableError, ConfigurationError
 from .evaluation import evaluate_audio
+from .provenance import finalize_manifest
 from .storage import LocalArtifactStore, sha256_file
 from .training import track_optional_run
 
@@ -41,6 +45,9 @@ class BenchmarkCase(BaseModel):
     input_condition: InputCondition = InputCondition.UNKNOWN
     dataset_id: str | None = None
     dataset_version: str | None = None
+    tags: list[str] = Field(default_factory=list, max_length=32)
+    language: Literal["tr", "en"] | None = None
+    reference_text: str | None = Field(default=None, max_length=20000)
 
 
 class BenchmarkConfiguration(BaseModel):
@@ -92,7 +99,7 @@ class BenchmarkCaseResult(BaseModel):
 
 
 class BenchmarkRun(BaseModel):
-    schema_version: str = "0.2"
+    schema_version: Literal["0.2", "0.3"] = "0.3"
     run_id: str
     name: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -102,13 +109,14 @@ class BenchmarkRun(BaseModel):
     hardware: dict[str, str]
     results: list[BenchmarkCaseResult] = Field(default_factory=list)
     artifacts: dict[str, str] = Field(default_factory=dict)
+    summary: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def public_config_snapshot(value: dict[str, Any]) -> dict[str, Any]:
     """Record reproducible settings without publishing machine-local paths or tracking credentials."""
     result: dict[str, Any] = {}
     for key, item in value.items():
-        if key.endswith(("_path", "_root", "_cache", "_executable", "_uri")) or key in {
+        if key.endswith(("_path", "_root", "_cache", "_executable", "_uri", "_directory")) or key in {
             "model_repository", "seed_vc_config", "seed_vc_checkpoint", "dataset_export",
         }:
             if item is not None:
@@ -176,6 +184,7 @@ class BenchmarkRunner:
                             "output_name": f"benchmark-{run.run_id}", "random_seed": seed,
                             "input_kind": case.input_kind, "input_condition": case.input_condition,
                             "instrumental_path": instrumental, "keep_intermediates": True,
+                            "language": case.language, "reference_text": case.reference_text,
                         })
                         pipeline = build_conversion_pipeline(self.factory, request, self.store)
                         conversion = pipeline.run(request, lambda value, stage: notify(value * 0.85, stage))
@@ -190,9 +199,15 @@ class BenchmarkRunner:
                             transpose_semitones=request.transpose_semitones,
                             ground_truth_stem=load_audio(ground_truth) if ground_truth else None,
                             separated_stem=original if ground_truth else None,
+                            content_evaluator=self.factory.build_content_evaluator(case.language, case.reference_text),
+                            singer_evaluator=self.factory.build_singer_evaluator(),
+                            pipeline_seconds=conversion.processing_time_seconds,
+                            provider_process=conversion.provider_process,
                         )
                         evaluation_id = self.store.put_json(evaluation.model_dump(mode="json"), f"benchmark-{run.run_id}", f"evaluation-{index}.json")
                         conversion.artifacts["evaluation_report.json"] = evaluation_id
+                        finalize_manifest(conversion, self.store, benchmark_run_id=run.run_id,
+                            dataset_id=case.dataset_id, dataset_version=case.dataset_version)
                         result.conversion, result.evaluation = conversion, evaluation
                         result.status = "succeeded"
                         result.warnings.extend(conversion.warnings)
@@ -244,6 +259,7 @@ class BenchmarkRunner:
         return run
 
     def _save(self, run: BenchmarkRun) -> None:
+        run.summary = summarize_benchmark(run)
         namespace = f"benchmark-{run.run_id}"
         json_id = self.store.put_json(run.model_dump(mode="json", exclude={"artifacts"}), namespace, "benchmark.json")
         report_dir = self.store.root / "benchmark-reports" / run.run_id
@@ -251,6 +267,46 @@ class BenchmarkRunner:
         report = report_dir / "benchmark.html"
         report.write_text(render_benchmark_report(run), encoding="utf-8")
         run.artifacts = {"benchmark.json": json_id, "benchmark.html": self.store.put_file(report, namespace, report.name)}
+
+
+def summarize_benchmark(run: BenchmarkRun) -> list[dict[str, Any]]:
+    configurations = [item.configuration_id for item in run.spec.configurations]
+    groups: dict[str, dict[str, dict[tuple[str, int, str, str], float]]] = {}
+    counts: dict[str, dict[str, dict[str, int]]] = {}
+    for row in run.results:
+        if row.evaluation is None:
+            continue
+        for family, metrics in row.evaluation.families.items():
+            for name, metric in metrics.items():
+                definition = json.dumps({"metric": f"{family}.{name}", "unit": metric.unit,
+                    "input_condition": row.input_condition.value,
+                    "evaluator": metric.evaluator.model_dump(mode="json") if metric.evaluator else None}, sort_keys=True)
+                group = groups.setdefault(definition, {})
+                statuses = counts.setdefault(definition, {}).setdefault(row.configuration_id, {})
+                statuses[metric.status] = statuses.get(metric.status, 0) + 1
+                if row.status == "succeeded" and metric.status == "measured" and metric.value is not None:
+                    group.setdefault(row.configuration_id, {})[(row.case_id, row.random_seed, row.source_sha256, row.reference_sha256)] = metric.value
+    summaries = []
+    for definition, group in sorted(groups.items()):
+        aggregates, paired = [], []
+        for configuration in configurations:
+            values = list(group.get(configuration, {}).values())
+            aggregates.append({"configuration_id": configuration, "measured_count": len(values),
+                "mean": statistics.mean(values) if values else None,
+                "median": statistics.median(values) if values else None,
+                "sample_standard_deviation": statistics.stdev(values) if len(values) > 1 else None,
+                "observed_status_counts": counts[definition].get(configuration, {})})
+        for left, right in combinations(configurations, 2):
+            a, b = group.get(left, {}), group.get(right, {})
+            common = sorted(a.keys() & b.keys())
+            paired.append({"left": left, "right": right, "common_count": len(common),
+                "case_seed_pairs": [{"case_id": key[0], "seed": key[1]} for key in common],
+                "left_mean": statistics.mean(a[key] for key in common) if common else None,
+                "right_mean": statistics.mean(b[key] for key in common) if common else None,
+                "mean_difference_left_minus_right": statistics.mean(a[key] - b[key] for key in common) if common else None})
+        summaries.append({"definition": json.loads(definition), "configurations": aggregates, "paired": paired,
+            "limitation": "Descriptive case-seed averages. Seeds are not independent recordings; no significance claim."})
+    return summaries
 
 
 def render_benchmark_report(run: BenchmarkRun) -> str:
@@ -277,5 +333,6 @@ def render_benchmark_report(run: BenchmarkRun) -> str:
         "Spectral differences are not a complete perceptual quality measure.</p>"
         "<table><thead><tr><th>Case</th><th>Configuration</th><th>Input condition</th><th>Seed</th>"
         "<th>Status</th><th>Seconds</th><th>Measurements</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table></html>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+        f"<h2>Common-case summaries</h2><pre>{html.escape(json.dumps(run.summary, indent=2))}</pre></html>"
     )

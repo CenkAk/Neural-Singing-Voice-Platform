@@ -95,9 +95,8 @@ class SoulXSingerSVCConverter:
         if settings.use_fp16:
             command.append("--fp16")
         env = offline_environment(settings.huggingface_cache)
-        env["HF_HUB_CACHE"] = str(settings.huggingface_cache.resolve() / "hub")
         run_external(command, cwd=settings.repository_root, env=env,
-            timeout=settings.timeout_seconds, label="SoulX-Singer-SVC")
+            timeout=settings.timeout_seconds, label="SoulX-Singer-SVC", device=settings.device)
         output_path = output_dir / "generated.wav"
         metadata_path = output_dir / "runtime.json"
         self.diagnostic_artifacts = {

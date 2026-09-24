@@ -8,10 +8,11 @@ from pathlib import Path
 import numpy as np
 
 from .audio.io import SUPPORTED_EXTENSIONS, load_audio, save_audio
-from .audio.processing import analyze_audio, preprocess_audio
+from .audio.processing import RESAMPLING_VERSION, analyze_audio, loudness_metrics, preprocess_audio
 from .audio.segmentation import find_segments
 from .config import AudioConfig, DatasetAuditConfig
 from .contracts import DatasetManifest, SegmentRecord
+from .execution import check_cancelled
 from .interfaces import PitchExtractor
 from .pitch import AutocorrelationPitchExtractor
 from .storage import LocalArtifactStore, sha256_file
@@ -57,14 +58,26 @@ class DatasetManager:
         records: list[SegmentRecord] = []
         sources: list[str] = []
         observed_f0: list[float] = []
+        source_details: list[dict[str, object]] = []
+        occurrences: dict[str, int] = {}
+        original_rates: set[int] = set()
         checksums = {source: sha256_file(source) for source in files}
         splits = {checksum: deterministic_split(checksum) for checksum in checksums.values()}
         if "train" not in splits.values():
             splits[checksums[files[0]]] = "train"
         for source in files:
+            check_cancelled()
             checksum = checksums[source]
             sources.append(checksum)
-            audio = preprocess_audio(load_audio(source), self.config.training_sample_rate, mono=True)
+            original = load_audio(source)
+            original_rates.add(original.sample_rate)
+            occurrences[checksum] = occurrences.get(checksum, 0) + 1
+            occurrence = occurrences[checksum]
+            if self.audit.enabled:
+                source_details.append({"file_name": source.name, "sha256": checksum,
+                    "original": analyze_audio(original, self.config.clipping_threshold).as_dict(),
+                    "loudness": {key: value.model_dump(mode="json") for key, value in loudness_metrics(original).items()}})
+            audio = preprocess_audio(original, self.config.training_sample_rate, mono=True)
             split = splits[checksum]
             boundaries = find_segments(
                 audio,
@@ -75,8 +88,11 @@ class DatasetManager:
                 self.config.silence_threshold_db,
             )
             for index, boundary in enumerate(boundaries):
+                check_cancelled()
                 segment = type(audio)(waveform=audio.waveform[:, boundary.start_sample : boundary.end_sample], sample_rate=audio.sample_rate)
                 segment_id = f"{singer_name}-{checksum[:10]}-{index:04d}"
+                if occurrence > 1:
+                    segment_id += f"-copy-{occurrence}"
                 temporary = self.store.root / "_staging" / f"{segment_id}.wav"
                 save_audio(temporary, segment)
                 artifact_id = self.store.put_file(temporary, f"datasets-{singer_name}", f"{segment_id}.wav")
@@ -118,7 +134,8 @@ class DatasetManager:
                     )
                 )
         config = self.config.model_dump(mode="json")
-        version_payload = json.dumps({"sources": sorted(sources), "config": config}, sort_keys=True).encode()
+        version_payload = json.dumps({"sources": sorted(sources), "config": config,
+            "resampling": RESAMPLING_VERSION}, sort_keys=True).encode()
         version = f"dataset-{hashlib.sha256(version_payload).hexdigest()[:12]}"
         analysis: dict[str, object] = {"pitch_extractor": self.pitch_extractor.name}
         if observed_f0:
@@ -136,6 +153,16 @@ class DatasetManager:
             )
         if self.audit.enabled:
             analysis["audit"] = dataset_audit(records, observed_f0, self.audit)
+            analysis["original_files"] = source_details
+            duplicates = [{"sha256": checksum, "files": [source.name for source in files if checksums[source] == checksum]}
+                for checksum, count in occurrences.items() if count > 1]
+            analysis["exact_duplicates"] = duplicates
+            source_warnings = []
+            if duplicates:
+                source_warnings.append("Exact duplicate files are retained in the same split. Duration and training exposure include these copies.")
+            if len(original_rates) > 1:
+                source_warnings.append("Original sample rates differ; training audio is resampled to the configured rate.")
+            analysis["source_warnings"] = source_warnings
         return DatasetManifest(
             dataset_id=f"{singer_name}-{version}",
             version=version,
@@ -211,6 +238,30 @@ def render_dataset_report(manifest: DatasetManifest, output: Path) -> None:
         f"<tr><td>{html.escape(segment.segment_id)}</td><td>{html.escape(segment.split)}</td><td>{segment.duration_seconds:.2f}</td><td>{int(segment.quality.get('clipping_samples', 0))}</td></tr>"
         for segment in manifest.segments
     )
+    audit = manifest.analysis.get("audit", {})
+    readiness_html = "<p>Dataset audit not measured.</p>"
+    if isinstance(audit, dict) and audit:
+        measurements = (
+            ("Usable duration (seconds)", "total_usable_duration_seconds"),
+            ("Voiced duration (seconds)", "voiced_duration_seconds"),
+            ("Segments containing clipping", "clipped_segments"),
+            ("Silence ratio (0 to 1)", "silence_ratio"),
+            ("Central pitch span (semitones)", "central_pitch_span_semitones"),
+        )
+        measurement_rows = "".join(
+            f"<tr><th scope='row'>{label}</th><td>{html.escape(str(audit[key])) if audit.get(key) is not None else 'Not measured'}</td></tr>"
+            for label, key in measurements
+        )
+        warnings = [*audit.get("warnings", []), *manifest.analysis.get("source_warnings", [])]
+        if audit.get("clipped_segments", 0):
+            warnings.append(f"{audit['clipped_segments']} segments contain clipping; inspect the original recordings.")
+        warning_list = "".join(f"<li>{html.escape(str(warning))}</li>" for warning in warnings)
+        readiness_html = (
+            f"<table aria-label='Dataset readiness measurements'><tbody>{measurement_rows}</tbody></table>"
+            f"<h3>Warnings</h3><ul>{warning_list}</ul>"
+            "<p>These measurements support review, not a universal training-readiness score. "
+            "Pitch coverage does not establish a singer's comfortable range.</p>"
+        )
     document = f"""<!doctype html><html><head><meta charset='utf-8'><title>Training Data Report</title>
 <style>body{{font-family:system-ui;max-width:1000px;margin:40px auto;padding:0 20px}}table{{border-collapse:collapse;width:100%}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}.metric{{display:inline-block;margin:8px;padding:16px;background:#f4f4f4;border-radius:8px}}.histogram{{height:130px;display:flex;align-items:end;gap:3px;border-bottom:1px solid #777}}.histogram span{{flex:1;background:#5a8f42;min-width:2px}}</style></head>
 <body><h1>Training Data Report: {html.escape(manifest.singer_name)}</h1><p>Dataset version: <code>{html.escape(manifest.version)}</code></p>
@@ -218,9 +269,13 @@ def render_dataset_report(manifest: DatasetManifest, output: Path) -> None:
 <div class='metric'>Segments<br><strong>{len(manifest.segments)}</strong></div>
 <div class='metric'>Clipping samples<br><strong>{clipping}</strong></div>
 <div class='metric'>Observed pitch range<br><strong>{pitch_text}</strong></div>
+<h2>Dataset readiness review</h2>{readiness_html}
 <h2>Pitch distribution</h2>{histogram_html}
 <h2>Segments</h2><table><thead><tr><th>ID</th><th>Split</th><th>Duration (s)</th><th>Clipping</th></tr></thead><tbody>{rows}</tbody></table>
 <h2>Dataset audit</h2><pre>{html.escape(json.dumps(manifest.analysis.get('audit', {'status': 'not_measured'}), indent=2))}</pre>
+<h2>Original files, before processing</h2><pre>{html.escape(json.dumps(manifest.analysis.get('original_files', {'status': 'not_measured'}), indent=2))}</pre>
+<h2>Exact duplicate files</h2><pre>{html.escape(json.dumps(manifest.analysis.get('exact_duplicates', []), indent=2))}</pre>
+<p>{html.escape(' '.join(manifest.analysis.get('source_warnings', [])))}</p>
 <p>Observed range must not be interpreted as comfortable vocal range. Extractor: {html.escape(str(manifest.analysis.get('pitch_extractor', 'Not measured')))}.</p></body></html>"""
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(document, encoding="utf-8")

@@ -47,7 +47,7 @@ class DemucsSeparator:
             str(output_root),
             str(input_path),
         ]
-        run_external(command, cwd=work_dir, timeout=self.timeout_seconds, label="Demucs separation")
+        run_external(command, cwd=work_dir, timeout=self.timeout_seconds, label="Demucs separation", device=self.device)
         stem_dir = output_root / self.model / input_path.stem
         vocals_path = stem_dir / "vocals.wav"
         instrumental_path = stem_dir / "no_vocals.wav"

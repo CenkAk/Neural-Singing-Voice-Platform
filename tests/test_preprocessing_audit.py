@@ -9,7 +9,7 @@ from test_dataset_pipeline import fixture_audio
 from nsvp.audio.io import save_audio
 from nsvp.config import AudioConfig, DatasetAuditConfig
 from nsvp.contracts import AudioBuffer, ConversionRequest, VocalSource
-from nsvp.datasets import DatasetManager
+from nsvp.datasets import DatasetManager, render_dataset_report
 from nsvp.errors import ConfigurationError
 from nsvp.pipeline import ConversionPipeline
 from nsvp.preprocessing import NoOpVocalPreprocessor, process_vocal, select_source
@@ -84,6 +84,17 @@ def test_dataset_audit_preserves_dataset_version_and_source_splits(tmp_path: Pat
     assert audit["total_usable_duration_seconds"] == pytest.approx(sum(s.duration_seconds for s in audited.segments))
     assert audit["voiced_duration_seconds"] > 0
     assert audit["warnings"]
+    audit["warnings"].append("<script>untrusted warning</script>")
+    audit["clipped_segments"] = 2
+    report_path = tmp_path / "report.html"
+    render_dataset_report(audited, report_path)
+    report = report_path.read_text(encoding="utf-8")
+    assert "Dataset readiness measurements" in report
+    assert "2 segments contain clipping" in report
+    assert "&lt;script&gt;untrusted warning&lt;/script&gt;" in report
+    assert "<script>" not in report
+    render_dataset_report(original, report_path)
+    assert "Dataset audit not measured." in report_path.read_text(encoding="utf-8")
     for source in audited.source_files:
         assert len({s.split for s in audited.segments if s.source_sha256 == source}) == 1
 

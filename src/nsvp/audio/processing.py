@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import importlib
 import math
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
-from ..contracts import AudioBuffer
+from ..contracts import AudioBuffer, EvaluatorMetadata, MetricResult
+from ..errors import DependencyUnavailableError
+
+RESAMPLING_VERSION = "polyphase-kaiser5-v1"
 
 
 @dataclass(frozen=True)
@@ -57,17 +62,54 @@ def to_mono(audio: AudioBuffer) -> AudioBuffer:
     return AudioBuffer(waveform=audio.waveform.mean(axis=0, keepdims=True), sample_rate=audio.sample_rate)
 
 
+def loudness_metrics(audio: AudioBuffer) -> dict[str, MetricResult]:
+    quality = analyze_audio(audio)
+    crest = 20 * math.log10(quality.peak / quality.rms) if quality.rms > 0 else None
+    result = {"crest_factor_db": MetricResult(value=crest, status="measured", unit="dB") if crest is not None
+        else MetricResult(unit="dB", reason="Silent audio has no finite crest factor.")}
+    metadata = EvaluatorMetadata(name="pyloudnorm", version="BS.1770", domain="audio",
+        limitations=["Integrated loudness is not a noise, reverberation or perceptual quality score."])
+    if audio.duration_seconds < 0.4:
+        loudness = MetricResult(unit="LUFS", reason="At least 400 ms of audio is required.", evaluator=metadata)
+    elif audio.channels > 2:
+        loudness = MetricResult(status="unsupported", unit="LUFS", reason="Channel layout is unknown for multichannel audio.", evaluator=metadata)
+    else:
+        try:
+            meter = importlib.import_module("pyloudnorm").Meter(audio.sample_rate)
+            value = float(meter.integrated_loudness(audio.waveform.T))
+            loudness = MetricResult(value=value, status="measured", unit="LUFS", evaluator=metadata) if math.isfinite(value) else MetricResult(
+                unit="LUFS", reason="No audio above the loudness gate.", evaluator=metadata)
+        except ImportError:
+            loudness = MetricResult(unit="LUFS", reason="pyloudnorm is not installed.", evaluator=metadata)
+        except (ValueError, RuntimeError):
+            loudness = MetricResult(status="failed", unit="LUFS", reason="Loudness measurement failed.", evaluator=metadata)
+    result["integrated_loudness_lufs"] = loudness
+    return result
+
+
 def remove_dc(audio: AudioBuffer) -> AudioBuffer:
     centered = audio.waveform - audio.waveform.mean(axis=1, keepdims=True)
     return AudioBuffer(waveform=centered.astype(np.float32), sample_rate=audio.sample_rate)
 
 
-def resample_audio(audio: AudioBuffer, target_sample_rate: int) -> AudioBuffer:
+def resample_audio(audio: AudioBuffer, target_sample_rate: int, *, method: Literal["polyphase", "legacy_linear"] = "polyphase") -> AudioBuffer:
     if target_sample_rate <= 0:
         raise ValueError("target sample rate must be positive")
     if audio.sample_rate == target_sample_rate:
         return audio
     target_samples = max(1, round(audio.samples * target_sample_rate / audio.sample_rate))
+    if method == "polyphase":
+        try:
+            signal = importlib.import_module("scipy.signal")
+        except ImportError as exc:
+            raise DependencyUnavailableError("Polyphase resampling requires the audio extra (scipy)") from exc
+        divisor = math.gcd(audio.sample_rate, target_sample_rate)
+        waveform = signal.resample_poly(audio.waveform, target_sample_rate // divisor,
+            audio.sample_rate // divisor, axis=1, window=("kaiser", 5.0))
+        result = AudioBuffer(waveform=np.asarray(waveform, dtype=np.float32), sample_rate=target_sample_rate)
+        return match_length(result, target_samples)
+    if method != "legacy_linear":
+        raise ValueError("unknown resampling method")
     old_positions = np.linspace(0.0, 1.0, audio.samples, endpoint=False)
     new_positions = np.linspace(0.0, 1.0, target_samples, endpoint=False)
     channels = [np.interp(new_positions, old_positions, channel) for channel in audio.waveform]
@@ -116,4 +158,3 @@ def mix_audio(
         mixed *= scale
         headroom_db = 20.0 * math.log10(scale)
     return AudioBuffer(waveform=mixed.astype(np.float32), sample_rate=instrumental.sample_rate), headroom_db
-

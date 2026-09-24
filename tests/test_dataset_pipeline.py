@@ -48,7 +48,7 @@ class DatasetPipelineTests(unittest.TestCase):
             store = LocalArtifactStore(root / "artifacts")
             pipeline = ConversionPipeline(DeterministicSeparator(), IdentityVoiceConverter(), store)
             result = pipeline.run(ConversionRequest(song_path=song, target_reference_path=reference, output_name="fixture"))
-            expected = {"source_vocal.wav", "instrumental.wav", "converted_vocal_raw.wav", "converted_vocal_processed.wav", "final_mix.wav", "conversion_report.json"}
+            expected = {"source_vocal.wav", "instrumental.wav", "converted_vocal_raw.wav", "converted_vocal_processed.wav", "final_mix.wav", "conversion_report.json", "run_manifest.json"}
             self.assertEqual(set(result.artifacts), expected)
             for artifact_id in result.artifacts.values():
                 self.assertTrue(store.resolve(artifact_id).is_file())

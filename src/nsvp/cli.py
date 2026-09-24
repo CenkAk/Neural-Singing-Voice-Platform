@@ -53,15 +53,26 @@ def parser() -> argparse.ArgumentParser:
     convert.add_argument("--seed", type=int, default=42)
     convert.add_argument("--input-kind", choices=["song", "vocal"], default="song")
     convert.add_argument("--discard-work", action="store_true")
+    convert.add_argument("--language", choices=["tr", "en"])
+    convert.add_argument("--reference-text", help="Verified source lyrics for supervised WER/CER")
     commands.add_parser("smoke", parents=[convert], add_help=False, help="Run one explicit model conversion and persist smoke evidence")
     components = commands.add_parser("components")
     components.add_argument("--probe", action="store_true")
     benchmark = commands.add_parser("benchmark")
     benchmark.add_argument("spec", type=Path)
+    reproduce = commands.add_parser("reproduce")
+    reproduce.add_argument("manifest_artifact_id")
+    compatibility = commands.add_parser("compatibility-report")
+    compatibility.add_argument("manifest_artifact_ids", nargs="*")
+    compatibility.add_argument("--failed-job", action="append", default=[], help="Include an explicit failed job ID")
     evaluate = commands.add_parser("evaluate")
     evaluate.add_argument("source", type=Path)
     evaluate.add_argument("output", type=Path)
-    commands.add_parser("worker")
+    evaluate.add_argument("--reference", type=Path)
+    evaluate.add_argument("--language", choices=["tr", "en"])
+    evaluate.add_argument("--reference-text", help="Verified source lyrics for supervised WER/CER")
+    worker = commands.add_parser("worker")
+    worker.add_argument("--kinds", nargs="+", help="Only claim these job kinds")
     models = commands.add_parser("models")
     model_commands = models.add_subparsers(dest="model_command", required=True)
     model_commands.add_parser("list")
@@ -103,6 +114,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             vocal_processing_profile=args.vocal_processing_profile, backend=BackendName(args.backend),
             precision=args.precision, random_seed=args.seed, input_kind=args.input_kind,
             keep_intermediates=not args.discard_work,
+            language=args.language, reference_text=args.reference_text,
         )
         result = build_handlers(config, factory)["conversion"](request.model_dump(mode="json"), lambda value, stage: None)
         if args.command == "smoke":
@@ -116,13 +128,27 @@ def main(argv: Sequence[str] | None = None) -> None:
     elif args.command == "benchmark":
         spec = BenchmarkSpec.model_validate_json(args.spec.read_text(encoding="utf-8"))
         print(BenchmarkRunner(factory, store).run(spec).model_dump_json(indent=2))
+    elif args.command == "reproduce":
+        result = build_handlers(config, factory)["reproduce"](
+            {"manifest_artifact_id": args.manifest_artifact_id}, lambda value, stage: None,
+        )
+        print(json.dumps(result, indent=2))
+    elif args.command == "compatibility-report":
+        from .compatibility import compatibility_report
+
+        jobs = JobStore(config.database_path) if args.failed_job else None
+        failures = [jobs.get(identifier) for identifier in args.failed_job] if jobs else []
+        print(compatibility_report(store, args.manifest_artifact_ids, failures).model_dump_json(indent=2))
     elif args.command == "evaluate":
         source, output = load_audio(args.source), load_audio(args.output)
         pitch = factory.build_pitch_extractor()
-        evaluation_report = evaluate_audio(source, output, pitch.extract(source), pitch.extract(output))
+        evaluation_report = evaluate_audio(source, output, pitch.extract(source), pitch.extract(output),
+            target_reference=load_audio(args.reference) if args.reference else None,
+            content_evaluator=factory.build_content_evaluator(args.language, args.reference_text),
+            singer_evaluator=factory.build_singer_evaluator())
         print(evaluation_report.model_dump_json(indent=2))
     elif args.command == "worker":
-        Worker(JobStore(config.database_path), build_handlers(config)).run_forever()
+        Worker(JobStore(config.database_path), build_handlers(config), kinds=tuple(args.kinds or ())).run_forever()
     elif args.command == "models" and args.model_command == "list":
         registry = ModelRegistry(config.artifact_root / "models", store)
         print(json.dumps([item.model_dump(mode="json") for item in registry.list()], indent=2, default=str))

@@ -10,9 +10,18 @@ import numpy as np
 
 from .audio.io import load_audio, save_audio
 from .audio.processing import analyze_audio, mix_audio, remove_dc
-from .contracts import AudioBuffer, ComponentExecution, ConversionRequest, ConversionResult, StemSet
+from .config import AppConfig
+from .contracts import (
+    AudioBuffer,
+    ComponentExecution,
+    ConversionRequest,
+    ConversionResult,
+    ProcessTelemetry,
+    StemSet,
+)
 from .interfaces import ConversionDiagnostics, SourceSeparator, VocalPreprocessor, VoiceConverter
 from .preprocessing import process_vocal
+from .provenance import record_conversion
 from .storage import LocalArtifactStore
 
 
@@ -21,12 +30,14 @@ class ConversionPipeline:
         self, separator: SourceSeparator | None, converter: VoiceConverter, store: LocalArtifactStore,
         *, preprocessors: Sequence[VocalPreprocessor] = (),
         executions: dict[str, ComponentExecution] | None = None,
+        configuration: AppConfig | None = None,
     ) -> None:
         self.separator = separator
         self.converter = converter
         self.store = store
         self.preprocessors = preprocessors
         self.executions = executions or {}
+        self.configuration = configuration
 
     def run(
         self, request: ConversionRequest, progress: Callable[[float, str], None] | None = None,
@@ -86,9 +97,13 @@ class ConversionPipeline:
                         artifacts[name] = self.store.put_file(path, f"conversion-{conversion_id}", name)
             for name, audio in named_audio.items():
                 path = output_dir / name
-                save_audio(path, audio)
+                save_audio(path, audio, subtype="FLOAT")
                 artifacts[name] = self.store.put_file(path, f"conversion-{conversion_id}", name)
             elapsed = time.perf_counter() - started
+            telemetry_id = artifacts.get("model_process.json")
+            provider_process = ProcessTelemetry.model_validate_json(
+                self.store.resolve(telemetry_id).read_text(encoding="utf-8"),
+            ) if telemetry_id else None
             report = {
                 "conversion_id": conversion_id,
                 "input_duration_seconds": song.duration_seconds,
@@ -105,13 +120,15 @@ class ConversionPipeline:
                 "executions": {key: value.model_dump(mode="json") for key, value in self.executions.items()},
                 "transpose_semitones": request.transpose_semitones,
                 "processing_time_seconds": elapsed,
+                "provider_process": provider_process.model_dump(mode="json") if provider_process else None,
                 "final_quality": analyze_audio(final_mix).as_dict(),
+                "raw_quality": analyze_audio(converted_raw).as_dict(),
                 "warnings": warnings,
             }
             report_path = output_dir / "conversion_report.json"
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
             artifacts[report_path.name] = self.store.put_file(report_path, f"conversion-{conversion_id}", report_path.name)
-            return ConversionResult(
+            result = ConversionResult(
                 conversion_id=conversion_id,
                 artifacts=artifacts,
                 warnings=warnings,
@@ -119,7 +136,10 @@ class ConversionPipeline:
                 components={"separator": self.separator.name if self.separator else "none", "voice_converter": self.converter.name},
                 executions=self.executions,
                 input_condition=request.input_condition,
+                provider_process=provider_process,
             )
+            record_conversion(request, result, self.store, self.configuration)
+            return result
         finally:
             # Preserve failed model output for diagnosis before deleting disposable work.
             if isinstance(self.converter, ConversionDiagnostics):
