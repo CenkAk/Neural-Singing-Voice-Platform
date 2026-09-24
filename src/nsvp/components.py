@@ -8,6 +8,7 @@ from typing import TypeVar
 from pydantic import BaseModel, ValidationError
 
 from .adapters.demucs import DemucsSeparator
+from .adapters.evaluators import EcapaSingerEvaluator, WhisperContentEvaluator
 from .adapters.external import EnvironmentProbe, probe_environment, python_executable
 from .adapters.seed_vc import SeedVCConverter, SeedVCSettings
 from .adapters.soulx_singer import SoulXSingerSettings, SoulXSingerSVCConverter
@@ -36,15 +37,17 @@ from .errors import (
     NSVPError,
 )
 from .interfaces import (
+    ContentEvaluator,
     MultiSingerSeparator,
     PitchExtractor,
+    SingerSimilarityEvaluator,
     SourceSeparator,
     TrainingBridge,
     VocalPreprocessor,
     VoiceConverter,
 )
 from .pitch import AutocorrelationPitchExtractor, PyWorldPitchExtractor, TorchCrepePitchExtractor
-from .preprocessing import NoOpVocalPreprocessor
+from .preprocessing import NoOpVocalPreprocessor, StudioCleanVocalPreprocessor
 from .registry import ModelRegistry
 from .storage import LocalArtifactStore, sha256_file
 from .training import SeedVCTrainingBridge
@@ -78,6 +81,12 @@ def component_catalog() -> dict[str, ComponentCapabilities]:
         "demucs": ComponentCapabilities(
             name="demucs", task=TaskType.SEPARATION, stability="stable", sample_rates=[44100],
             external_environment=True, backends=_compatibility(torch_backends),
+        ),
+        "studio_clean": ComponentCapabilities(
+            name="studio_clean", version="0.3", task=TaskType.PREPROCESSING, stability="stable",
+            installed=importlib.util.find_spec("pyloudnorm") is not None, configured=True,
+            backends={BackendName.CPU: CompatibilityStatus.VERIFIED},
+            warnings=["DC removal and bounded loudness gain only. No denoising or dereverberation. Peak and gain limits can prevent reaching target LUFS."],
         ),
         "none": ComponentCapabilities(
             name="none", version="0.2", task=TaskType.PREPROCESSING, stability="stable",
@@ -130,7 +139,11 @@ class ComponentFactory:
         self.config = config
         self.separators = separators or {}
         self.converters = converters or {}
-        self.preprocessors = {"none": NoOpVocalPreprocessor, **(preprocessors or {})}
+        self.preprocessors: dict[str, Callable[[], VocalPreprocessor]] = {
+            "none": NoOpVocalPreprocessor,
+            "studio_clean": lambda: StudioCleanVocalPreprocessor(config.providers.studio_clean),
+            **(preprocessors or {}),
+        }
         self.multi_singer_separators = multi_singer_separators or {}
 
     def build_multi_singer_separator(self, provider: str) -> MultiSingerSeparator:
@@ -359,6 +372,14 @@ class ComponentFactory:
         if selection.provider == "torchcrepe":
             return TorchCrepePitchExtractor()
         raise ConfigurationError(f"unsupported pitch extractor: {selection.provider}")
+
+    def build_content_evaluator(self, language: str | None = None, reference_text: str | None = None) -> ContentEvaluator | None:
+        settings = self.config.evaluation.content
+        return WhisperContentEvaluator(settings, language, reference_text) if settings.enabled else None
+
+    def build_singer_evaluator(self) -> SingerSimilarityEvaluator | None:
+        settings = self.config.evaluation.singer
+        return EcapaSingerEvaluator(settings) if settings.enabled else None
 
     def build_training_bridge(self, store: LocalArtifactStore, provider: str = "seed_vc") -> TrainingBridge:
         if provider != "seed_vc":

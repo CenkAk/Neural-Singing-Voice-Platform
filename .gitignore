@@ -30,6 +30,10 @@ apps/web/dist/
 /docs/
 /CHANGELOG.md
 
+# Local recordings used for real-model validation
+/ses.mp4
+/mango mandalina vibe (Remastered)_*.wav
+
 # Private authoring, report, CV, and portfolio outputs
 MASTER PROMPT_ Neural Singing Voice Platform.md
 Orhan_Cenk_Akcadogan_Global_Resume_*.docx

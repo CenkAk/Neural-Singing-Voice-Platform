@@ -14,6 +14,7 @@ from .datasets import DatasetManager, render_dataset_report
 from .evaluation import evaluate_audio
 from .pipeline import ConversionPipeline
 from .preparation import prepare_vocal, resolve_conversion_request
+from .provenance import RunManifest, finalize_manifest, reproduce_request, verify_execution_identity
 from .storage import LocalArtifactStore
 from .training import track_optional_run
 
@@ -36,10 +37,12 @@ def build_handlers(config: AppConfig, factory: ComponentFactory | None = None) -
         report_id = store.put_file(report, "dataset-reports", report.name)
         return {"dataset_id": manifest.dataset_id, "manifest_artifact_id": manifest_id, "report_artifact_id": report_id}
 
-    def convert(payload: dict[str, Any], progress: Callable[[float, str], None]) -> dict[str, Any]:
+    def convert(payload: dict[str, Any], progress: Callable[[float, str], None], replay: RunManifest | None = None) -> dict[str, Any]:
         request = resolve_conversion_request(payload, store)
         progress(0.05, "resolving_components")
         pipeline = build_conversion_pipeline(components, request, store)
+        if replay is not None:
+            verify_execution_identity(replay, pipeline.executions)
         result = pipeline.run(request, progress)
         progress(0.9, "evaluating")
         source = load_audio(store.resolve(result.artifacts.get("selected_vocal.wav", result.artifacts["source_vocal.wav"])))
@@ -49,12 +52,24 @@ def build_handlers(config: AppConfig, factory: ComponentFactory | None = None) -
             source, output, pitch.extract(source), pitch.extract(output),
             target_reference=load_audio(request.target_reference_path),
             input_condition=request.input_condition, transpose_semitones=request.transpose_semitones,
+            content_evaluator=components.build_content_evaluator(request.language, request.reference_text),
+            singer_evaluator=components.build_singer_evaluator(),
+            pipeline_seconds=result.processing_time_seconds,
+            provider_process=result.provider_process,
         )
         result.artifacts["evaluation_report.json"] = store.put_json(
             report.model_dump(mode="json"), f"conversion-{result.conversion_id}", "evaluation_report.json",
         )
+        finalize_manifest(result, store)
         progress(0.95, "storing_artifacts")
         return result.model_dump(mode="json")
+
+    def reproduce(payload: dict[str, Any], progress: Callable[[float, str], None]) -> dict[str, Any]:
+        manifest = RunManifest.model_validate_json(store.resolve(payload["manifest_artifact_id"]).read_text(encoding="utf-8"))
+        request = reproduce_request(manifest, store, config)
+        result = convert(request.model_dump(mode="json"), progress, replay=manifest)
+        result["reproduced_from_run_id"] = manifest.run_id
+        return result
 
     def separate(payload: dict[str, Any], progress: Callable[[float, str], None]) -> dict[str, Any]:
         progress(0.1, "loading_audio")
@@ -126,6 +141,8 @@ def build_handlers(config: AppConfig, factory: ComponentFactory | None = None) -
             ground_truth_stem=load_audio(store.resolve(request.ground_truth_stem_artifact_id)) if request.ground_truth_stem_artifact_id else None,
             separated_stem=load_audio(store.resolve(request.separated_stem_artifact_id)) if request.separated_stem_artifact_id else None,
             input_condition=request.input_condition, transpose_semitones=request.transpose_semitones,
+            content_evaluator=components.build_content_evaluator(request.language, request.reference_text),
+            singer_evaluator=components.build_singer_evaluator(),
         )
         artifact = store.put_json(report.model_dump(mode="json"), "evaluations", "evaluation_report.json")
         return {"evaluation": report.model_dump(mode="json"), "artifacts": {"evaluation_report.json": artifact}}
@@ -134,7 +151,7 @@ def build_handlers(config: AppConfig, factory: ComponentFactory | None = None) -
         request = VocalPreparationRequest.model_validate(payload)
         return prepare_vocal(request, components, store, progress).model_dump(mode="json")
 
-    return {"dataset_analyze": dataset_analyze, "conversion": convert, "separation": separate,
+    return {"dataset_analyze": dataset_analyze, "conversion": convert, "reproduce": reproduce, "separation": separate,
         "training": train, "benchmark": benchmark, "evaluation": evaluate, "vocal_preparation": vocal_preparation}
 
 
@@ -151,4 +168,5 @@ def build_conversion_pipeline(
         separator, converter, store,
         preprocessors=[] if request.preparation_manifest_artifact_id else factory.build_vocal_preprocessors(request.vocal_processing_profile),
         executions=executions,
+        configuration=factory.config,
     )

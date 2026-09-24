@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .adapters.external import python_executable, run_external
-from .contracts import DatasetManifest
+from .adapters.external import probe_environment, python_executable, run_external
+from .contracts import BackendName, DatasetManifest
 from .errors import ConfigurationError, DependencyUnavailableError
 from .storage import LocalArtifactStore
 
@@ -41,7 +41,10 @@ class SeedVCTrainingBridge:
         command = [str(python_executable(self.python)), str(train_script), "--config", str(config_path.resolve()), "--run-name", run_name]
         if resume is not None:
             command.extend(["--resume", str(resume.resolve())])
-        run_external(command, cwd=self.seed_vc_root, timeout=86400, label="Seed-VC training")
+        environment = probe_environment(self.python, ("torch",))
+        # The upstream training CLI selects MPS when available, otherwise CUDA device 0.
+        device = "mps" if BackendName.MPS in environment.backends else "cuda:0"
+        run_external(command, cwd=self.seed_vc_root, timeout=86400, label="Seed-VC training", device=device)
 
 
 class ExperimentTracker:

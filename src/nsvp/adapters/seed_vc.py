@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from ..audio.io import load_audio, save_audio
 from ..audio.processing import match_length, preprocess_audio, resample_audio
 from ..contracts import AudioBuffer
-from ..errors import ConfigurationError, DependencyUnavailableError, NSVPError
+from ..errors import AudioValidationError, ConfigurationError, DependencyUnavailableError, NSVPError
 from .external import offline_environment, python_executable, run_external, validate_revision
 
 
@@ -47,13 +47,16 @@ class SeedVCConverter:
                 raise ConfigurationError(f"Seed-VC {label} does not exist: {path}")
 
     def convert(self, source_vocal: AudioBuffer, target_reference: AudioBuffer, semitones: int, work_dir: Path) -> AudioBuffer:
+        self.diagnostic_artifacts = {}
         self.validate_installation()
         work_dir = work_dir.resolve()
         work_dir.mkdir(parents=True, exist_ok=True)
         source_path = work_dir / "seed-source.wav"
         target_path = work_dir / "seed-target.wav"
         output_dir = work_dir / "seed-output"
-        output_dir.mkdir(exist_ok=True)
+        if output_dir.exists():
+            raise ConfigurationError("Seed-VC output directory must be new to prevent stale output reuse")
+        output_dir.mkdir()
         prepared_source = preprocess_audio(source_vocal, self.sample_rate, mono=True)
         prepared_target = preprocess_audio(target_reference, self.sample_rate, mono=True)
         save_audio(source_path, prepared_source)
@@ -84,24 +87,34 @@ class SeedVCConverter:
             "--device", self.settings.device,
             "--seed", str(self.settings.random_seed),
         ]
+        telemetry = work_dir / "process.json"
+        self.diagnostic_artifacts["model_process.json"] = telemetry
         run_external(
             command,
             cwd=self.settings.repository_root,
             timeout=self.settings.timeout_seconds,
             env=offline_environment(self.settings.huggingface_cache),
             label="Seed-VC conversion",
+            device=self.settings.device,
+            telemetry_path=telemetry,
         )
         outputs = sorted(output_dir.glob("*.wav"), key=lambda path: path.stat().st_mtime)
         if not outputs:
             raise NSVPError("Seed-VC completed without a WAV output")
         converted = load_audio(outputs[-1])
+        difference = converted.duration_seconds - source_vocal.duration_seconds
+        tolerance = max(0.1, source_vocal.duration_seconds * 0.01)
         alignment = work_dir / "alignment.json"
         alignment.write_text(json.dumps({
             "raw_duration_seconds": converted.duration_seconds,
             "source_duration_seconds": source_vocal.duration_seconds,
-            "adjustment_seconds": converted.duration_seconds - source_vocal.duration_seconds,
-            "policy": "V1 length matching after resampling; original model output preserved separately",
+            "adjustment_seconds": difference,
+            "tolerance_seconds": tolerance,
+            "accepted": abs(difference) <= tolerance,
+            "policy": "Length matching only within 100 ms or 1% of source duration, whichever is larger",
         }, indent=2), encoding="utf-8")
-        self.diagnostic_artifacts = {"model_output_original.wav": outputs[-1], "model_alignment.json": alignment}
+        self.diagnostic_artifacts.update({"model_output_original.wav": outputs[-1], "model_alignment.json": alignment})
+        if abs(difference) > tolerance:
+            raise AudioValidationError("Seed-VC output duration exceeds alignment tolerance; raw output retained")
         converted = resample_audio(converted, source_vocal.sample_rate)
         return match_length(converted, source_vocal.samples)

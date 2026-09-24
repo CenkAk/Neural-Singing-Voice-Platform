@@ -87,7 +87,14 @@ class PitchProviderConfig(StrictConfig):
         return self
 
 
+class StudioCleanConfig(StrictConfig):
+    target_lufs: float = Field(default=-23, ge=-60, le=-6, allow_inf_nan=False)
+    maximum_gain_db: float = Field(default=12, ge=0, le=24, allow_inf_nan=False)
+    peak_ceiling: float = Field(default=0.98, gt=0, le=1, allow_inf_nan=False)
+
+
 class ProvidersConfig(StrictConfig):
+    studio_clean: StudioCleanConfig = Field(default_factory=StudioCleanConfig)
     seed_vc: SeedVCProviderConfig = Field(default_factory=SeedVCProviderConfig)
     soulx_singer: SoulXProviderConfig = Field(default_factory=SoulXProviderConfig)
     demucs: DemucsProviderConfig = Field(default_factory=DemucsProviderConfig)
@@ -131,6 +138,20 @@ class AudioConfig(BaseModel):
     clipping_threshold: float = 0.999
 
 
+class LocalEvaluatorConfig(StrictConfig):
+    enabled: bool = False
+    python_executable: Path | None = None
+    model_directory: Path | None = None
+    model_name: str | None = None
+    revision: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{40}$")
+    timeout_seconds: float = Field(default=600, gt=0)
+
+
+class EvaluationConfig(StrictConfig):
+    content: LocalEvaluatorConfig = Field(default_factory=LocalEvaluatorConfig)
+    singer: LocalEvaluatorConfig = Field(default_factory=LocalEvaluatorConfig)
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     device: DeviceConfig = Field(default_factory=DeviceConfig)
@@ -140,6 +161,7 @@ class AppConfig(BaseModel):
     profiles: dict[str, ComponentProfile] = Field(default_factory=dict)
     vocal_processing_profiles: dict[str, VocalProcessingProfile] = Field(default_factory=dict)
     dataset_audit: DatasetAuditConfig = Field(default_factory=DatasetAuditConfig)
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     mlflow_tracking_uri: str | None = None
     artifact_root: Path = Path("artifacts")
     database_path: Path = Path("artifacts/nsvp.sqlite3")

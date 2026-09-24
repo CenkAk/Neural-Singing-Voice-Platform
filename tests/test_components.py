@@ -102,7 +102,7 @@ def test_runtime_uses_explicit_fake_factory(tmp_path: Path) -> None:
     result = build_handlers(config, factory)["conversion"](request.model_dump(mode="json"), lambda _, stage: stages.append(stage))
     assert result["components"]["voice_converter"] == "identity-test-converter"
     assert "processing_vocal" in stages
-    assert len(result["artifacts"]) == 7
+    assert len(result["artifacts"]) == 8
     assert "evaluation_report.json" in result["artifacts"]
 
 

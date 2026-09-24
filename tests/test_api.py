@@ -76,6 +76,12 @@ def test_v02_artifact_only_preparation_conversion_and_benchmark(tmp_path: Path) 
     assert worker.run_once()
     conversion = client.get("/jobs/" + queued.json()["id"]).json()
     assert conversion["state"] == "SUCCEEDED"
+    restarted = TestClient(create_app(config, factory))
+    history = restarted.get("/conversion-runs?limit=1").json()
+    assert history[0]["id"] == conversion["id"]
+    assert history[0]["result"]["artifacts"]["run_manifest.json"]
+    assert restarted.get("/conversion-runs?limit=0").status_code == 400
+    assert restarted.get("/conversion-runs?offset=1").json() == []
     assert str(tmp_path) not in str(conversion)
     artifacts = conversion["result"]["artifacts"]
     evaluation = client.get("/artifacts/" + artifacts["evaluation_report.json"]).json()
