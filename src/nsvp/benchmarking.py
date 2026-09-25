@@ -207,6 +207,7 @@ class BenchmarkRunner:
                         evaluation_id = self.store.put_json(evaluation.model_dump(mode="json"), f"benchmark-{run.run_id}", f"evaluation-{index}.json")
                         conversion.artifacts["evaluation_report.json"] = evaluation_id
                         finalize_manifest(conversion, self.store, benchmark_run_id=run.run_id,
+                            benchmark_case_id=case.case_id, benchmark_configuration_id=configuration.configuration_id,
                             dataset_id=case.dataset_id, dataset_version=case.dataset_version)
                         result.conversion, result.evaluation = conversion, evaluation
                         result.status = "succeeded"

@@ -8,6 +8,7 @@ from nsvp.audio.io import save_audio
 from nsvp.components import ComponentFactory
 from nsvp.config import AppConfig
 from nsvp.contracts import ConversionRequest
+from nsvp.provenance import RunManifest
 from nsvp.runtime import build_handlers
 from nsvp.storage import LocalArtifactStore
 from nsvp.testing_backends import IdentityVoiceConverter
@@ -60,7 +61,32 @@ def test_blind_session_persistence_rating_and_media(tmp_path: Path) -> None:
     summary = client.get("/listening-summary", params={"listener_id": listener}).json()
     assert summary["rated_session_count"] == 1 and len(summary["runs"]) == 2
     assert all(run["rating_count"] == 1 and run["means"] == scores for run in summary["runs"])
-    assert client.post("/listening-sessions", json={**payload, "second_manifest_id": first}).status_code == 400
+    assert len(summary["groups"]) == 1
+    assert summary["groups"][0]["provider"] == "private-provider"
+    assert summary["groups"][0]["rating_count"] == 2
+    assert summary["groups"][0]["preference_percent"] == 0
     store = LocalArtifactStore(config.artifact_root)
+    benchmark_ids = []
+    for result, configuration_id in zip(results, ("steps-20", "steps-30")):
+        manifest = RunManifest.model_validate_json(store.resolve(result["artifacts"]["run_manifest.json"]).read_text())
+        manifest.benchmark_run_id = "paired-benchmark"
+        manifest.benchmark_case_id = "mango"
+        manifest.benchmark_configuration_id = configuration_id
+        benchmark_ids.append(store.put_json(manifest.model_dump(mode="json"), "test-listening", configuration_id + ".json"))
+    other_listener = "b" * 32
+    paired = client.post("/listening-sessions", json={"listener_id": other_listener,
+        "first_manifest_id": benchmark_ids[0], "second_manifest_id": benchmark_ids[1]}).json()
+    assert "mapping" not in paired
+    rated_pair = client.post(f"/listening-sessions/{paired['id']}/ratings?listener_id={other_listener}",
+        json={"a": scores, "b": {**scores, "naturalness": 2}, "preference": "A"}).json()
+    grouped = client.get("/listening-summary", params={"listener_id": other_listener}).json()["groups"]
+    assert {group["configuration_id"] for group in grouped} == {"steps-20", "steps-30"}
+    assert all(group["provider"] == "private-provider" and group["case_id"] == "mango"
+        and group["benchmark_run_id"] == "paired-benchmark" and group["rating_count"] == 1 for group in grouped)
+    preferred = rated_pair["mapping"]["A"]["benchmark_configuration_id"]
+    assert next(group for group in grouped if group["configuration_id"] == preferred)["preference_percent"] == 100
+    assert next(group for group in grouped if group["configuration_id"] != preferred)["preference_percent"] == 0
+    assert next(group for group in grouped if group["configuration_id"] != preferred)["means"]["naturalness"] == 2
+    assert client.post("/listening-sessions", json={**payload, "second_manifest_id": first}).status_code == 400
     store.resolve(results[0]["artifacts"]["converted_vocal_raw.wav"]).write_bytes(b"corrupt")
     assert client.post("/listening-sessions", json=payload).status_code == 400
