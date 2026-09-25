@@ -34,15 +34,26 @@ function parseSummary(value: unknown) {
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Invalid listening count");
     return value;
   };
-  return { count: count(data.rated_session_count), limitations: items(data.limitations).map(text), runs: items(data.runs).map(value => {
+  const parseResult = (value: unknown) => {
     const run = object(value), means = object(run.means);
-    return { id: text(run.run_id), count: count(run.rating_count), preferred: count(run.preferred_count), ties: count(run.tie_count),
+    const total = count(run.rating_count), preferred = count(run.preferred_count), ties = count(run.tie_count);
+    const percent = run.preference_percent;
+    if (total === 0 || preferred + ties > total || typeof percent !== "number" || !Number.isFinite(percent) || percent < 0 || percent > 100) throw new Error("Invalid listening summary");
+    return { count: total, preferred, ties, percent,
       means: Object.keys(dimensions).map(name => {
         const mean = means[name];
         if (typeof mean !== "number" || !Number.isFinite(mean) || mean < 1 || mean > 5) throw new Error("Invalid listening mean");
         return mean;
       }) };
-  }) };
+  };
+  const optional = (value: unknown) => value === null ? null : text(value);
+  return { count: count(data.rated_session_count), limitations: items(data.limitations).map(text),
+    runs: items(data.runs).map(value => ({ id: text(object(value).run_id), ...parseResult(value) })),
+    groups: items(data.groups).map(value => {
+      const group = object(value);
+      return { provider: optional(group.provider), benchmark: optional(group.benchmark_run_id),
+        configuration: optional(group.configuration_id), caseId: optional(group.case_id), ...parseResult(value) };
+    }) };
 }
 
 export function Listening({ jobs }: { jobs: Job[] }) {
@@ -158,9 +169,17 @@ export function Listening({ jobs }: { jobs: Job[] }) {
       : !summary ? <p role="status">Loading listening results...</p> : <>
         <p>Rated sessions: {summary.count}</p>
         {summary.limitations.map(note => <p key={note}>{note}</p>)}
+        <h4>Grouped ratings</h4>
+        {summary.groups.length === 0 && <p>No grouped ratings yet.</p>}
+        {summary.groups.map((group, index) => <article key={index} aria-label={`Listening group ${index + 1}`}>
+          <h5>{group.provider ?? "Unknown provider"} / {group.configuration ?? "Unknown configuration"} / {group.caseId ?? "No benchmark case"}</h5>
+          {group.benchmark && <p>Benchmark: {group.benchmark}</p>}
+          <p>Ratings: {group.count}. Preferred: {group.percent.toFixed(1)}%. Ties: {group.ties}.</p>
+          <dl>{Object.values(dimensions).map((title, dimension) => <div key={title}><dt>{title}</dt><dd>{group.means[dimension].toFixed(2)} / 5</dd></div>)}</dl>
+        </article>)}
         {summary.runs.map(run => <article key={run.id} aria-label={`Listening results for ${run.id}`}>
           <h4>Run {run.id.slice(0, 12)}</h4>
-          <p>Ratings: {run.count}. Preferred: {run.preferred}. Ties: {run.ties}.</p>
+          <p>Ratings: {run.count}. Preferred: {run.preferred} ({run.percent.toFixed(1)}%). Ties: {run.ties}.</p>
           <dl>{Object.values(dimensions).map((title, index) => <div key={title}><dt>{title}</dt><dd>{run.means[index].toFixed(2)} / 5</dd></div>)}</dl>
         </article>)}
       </>}

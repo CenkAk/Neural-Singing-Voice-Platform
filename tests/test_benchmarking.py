@@ -18,6 +18,7 @@ from nsvp.components import ComponentFactory
 from nsvp.config import AppConfig
 from nsvp.contracts import EvaluatorMetadata, InputCondition, MetricResult
 from nsvp.evaluation import evaluate_audio
+from nsvp.provenance import RunManifest
 from nsvp.storage import LocalArtifactStore
 from nsvp.testing_backends import IdentityVoiceConverter
 
@@ -44,6 +45,9 @@ def test_benchmark_compares_identical_inputs_and_persists_honest_results(tmp_pat
     assert run.results[0].random_seed == run.results[1].random_seed
     assert run.results[2].status == "not_tested"
     assert run.results[2].evaluation is None
+    assert run.results[0].conversion is not None
+    manifest = RunManifest.model_validate_json(store.resolve(run.results[0].conversion.artifacts["run_manifest.json"]).read_text())
+    assert (manifest.benchmark_run_id, manifest.benchmark_case_id, manifest.benchmark_configuration_id) == (run.run_id, "clean", "a")
     data = json.loads(store.resolve(run.artifacts["benchmark.json"]).read_text())
     assert len(data["results"]) == 3
     assert "artifact_root" not in data["config_snapshot"]

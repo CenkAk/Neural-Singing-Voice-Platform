@@ -12,7 +12,7 @@ Local real-model validation completed on an AMD RX 7700 XT in WSL Ubuntu with RO
 
 The short benchmark took 123.4 and 126.0 seconds respectively, excluding evaluation. Both source-ASR proxy WER values were 1.0; no quality winner is claimed. Faster-whisper and SpeechBrain ECAPA ran locally in a separate CPU environment. Their speech-domain metrics are not singing ground truth. Total peak RAM and VRAM remain unmeasured; sparse provider RSS samples are not suitable for peak-memory comparisons.
 
-Other provider/backend combinations remain unverified unless backed by an explicit compatibility report. SoulX-Singer-SVC remains experimental. Strict replay does not yet verify all auxiliary converter assets or evaluator dependency versions. Remote CI and the release audit remain open.
+Other provider/backend combinations remain unverified unless backed by an explicit compatibility report. SoulX-Singer-SVC remains experimental. Strict replay does not yet verify all auxiliary converter assets or evaluator dependency versions. The release audit remains open.
 
 Synthetic checks test orchestration and metrics, not singer quality. Browser checks covered desktop/mobile layout, upload, preparation, explicit source selection, playback and benchmark result rendering.
 

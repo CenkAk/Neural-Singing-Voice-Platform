@@ -38,6 +38,8 @@ class RunManifest(BaseModel):
     architecture: str
     python_version: str
     benchmark_run_id: str | None = None
+    benchmark_case_id: str | None = None
+    benchmark_configuration_id: str | None = None
     dataset_id: str | None = None
     dataset_version: str | None = None
     evaluation: ArtifactDigest | None = None
@@ -100,12 +102,15 @@ def record_conversion(
 
 def finalize_manifest(
     result: ConversionResult, store: LocalArtifactStore, *, benchmark_run_id: str | None = None,
+    benchmark_case_id: str | None = None, benchmark_configuration_id: str | None = None,
     dataset_id: str | None = None, dataset_version: str | None = None,
 ) -> None:
     manifest = RunManifest.model_validate_json(store.resolve(result.artifacts["run_manifest.json"]).read_text(encoding="utf-8"))
     manifest.outputs = {name: artifact_digest(store, identifier) for name, identifier in result.artifacts.items() if name != "run_manifest.json"}
     manifest.evaluation = manifest.outputs.get("evaluation_report.json")
     manifest.benchmark_run_id = benchmark_run_id
+    manifest.benchmark_case_id = benchmark_case_id
+    manifest.benchmark_configuration_id = benchmark_configuration_id
     manifest.dataset_id, manifest.dataset_version = dataset_id, dataset_version
     result.artifacts["run_manifest.json"] = store.put_json(
         manifest.model_dump(mode="json"), f"conversion-{result.conversion_id}", "run_manifest.json",

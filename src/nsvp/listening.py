@@ -70,6 +70,10 @@ class ListeningStore:
             for label, manifest in zip(("A", "B"), manifests):
                 mapping[label] = {"run_id": manifest.run_id,
                     "manifest_artifact_id": manifest_ids[manifest.run_id],
+                    "benchmark_run_id": manifest.benchmark_run_id,
+                    "benchmark_case_id": manifest.benchmark_case_id,
+                    "benchmark_configuration_id": manifest.benchmark_configuration_id,
+                    "configuration_sha256": manifest.configuration_sha256,
                     "executions": {name: execution.model_dump(mode="json") for name, execution in manifest.executions.items()}}
                 if "converted_vocal_raw.wav" not in manifest.outputs:
                     raise ValueError("Conversion manifest has no raw vocal output")
@@ -147,19 +151,32 @@ class ListeningStore:
             rows = connection.execute("SELECT mapping,rating FROM listening_sessions WHERE listener_id=? AND rating IS NOT NULL",
                 (listener_id,)).fetchall()
         runs: dict[str, dict[str, Any]] = {}
+        groups: dict[tuple[str | None, ...], dict[str, Any]] = {}
         for row in rows:
             mapping, rating = json.loads(row["mapping"]), ListeningRating.model_validate_json(row["rating"])
             for label, scores in (("A", rating.a), ("B", rating.b)):
-                run_id = str(mapping[label]["run_id"])
+                entry = mapping[label]
+                run_id = str(entry["run_id"])
                 result = runs.setdefault(run_id, {"run_id": run_id, "rating_count": 0,
                     "preferred_count": 0, "tie_count": 0, "means": dict.fromkeys(ListeningScores.model_fields, 0.0)})
-                result["rating_count"] += 1
-                result["preferred_count"] += rating.preference == label
-                result["tie_count"] += rating.preference == "tie"
-                for name, score in scores.model_dump().items():
-                    result["means"][name] += score
-        for result in runs.values():
-            result["means"] = {name: total / result["rating_count"] for name, total in result["means"].items()}
-        return {"rated_session_count": len(rows), "runs": list(runs.values()),
+                provider = entry.get("executions", {}).get("voice_converter", {}).get("provider")
+                benchmark_id = entry.get("benchmark_run_id")
+                configuration_id = entry.get("benchmark_configuration_id") or entry.get("configuration_sha256")
+                case_id = entry.get("benchmark_case_id")
+                key = (provider, benchmark_id, configuration_id, case_id)
+                group = groups.setdefault(key, {"provider": provider, "benchmark_run_id": benchmark_id,
+                    "configuration_id": configuration_id, "case_id": case_id, "rating_count": 0,
+                    "preferred_count": 0, "tie_count": 0, "means": dict.fromkeys(ListeningScores.model_fields, 0.0)})
+                for target in (result, group):
+                    target["rating_count"] += 1
+                    target["preferred_count"] += rating.preference == label
+                    target["tie_count"] += rating.preference == "tie"
+                    for name, score in scores.model_dump().items():
+                        target["means"][name] += score
+        for result in (*runs.values(), *groups.values()):
+            count = result["rating_count"]
+            result["means"] = {name: total / count for name, total in result["means"].items()}
+            result["preference_percent"] = 100 * result["preferred_count"] / count
+        return {"rated_session_count": len(rows), "runs": list(runs.values()), "groups": list(groups.values()),
             "limitations": ["Descriptive ratings from this local listener only; no statistical significance claim.",
                 "Artifact severity uses the opposite direction: higher means worse."]}
