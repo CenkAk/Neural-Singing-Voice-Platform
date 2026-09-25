@@ -47,9 +47,12 @@ const { chromium } = require(process.env.NSVP_PLAYWRIGHT_MODULE || "playwright")
     assert.ok((await dialog.innerText()).includes("synthetic-a"));
     await page.keyboard.press("Escape");
     await page.getByText("Rated sessions: 1", { exact: true }).waitFor();
-    assert.equal(await page.getByText("Ratings: 1. Preferred: 0. Ties: 1.", { exact: true }).count(), 2);
-    assert.equal(await page.getByText("2.00 / 5", { exact: true }).count(), 4);
-    assert.equal(await page.getByText("4.00 / 5", { exact: true }).count(), 4);
+    assert.equal(await page.getByText("Ratings: 1. Preferred: 0 (0.0%). Ties: 1.", { exact: true }).count(), 2);
+    assert.equal(await page.getByText("Ratings: 1. Preferred: 0.0%. Ties: 1.", { exact: true }).count(), 2);
+    assert.equal(await page.getByRole("heading", { name: /synthetic-a \/ / }).count(), 1);
+    assert.equal(await page.getByRole("heading", { name: /synthetic-b \/ / }).count(), 1);
+    assert.equal(await page.getByText("2.00 / 5", { exact: true }).count(), 8);
+    assert.equal(await page.getByText("4.00 / 5", { exact: true }).count(), 8);
     await page.reload();
     await page.getByText("Rated sessions: 1", { exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelector('select[name="first"]')?.options.length === 3);
